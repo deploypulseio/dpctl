@@ -1,5 +1,5 @@
 {
-  "name": "dpctl",
+  "name": "@deploypulseio/dpctl",
   "version": "1.0.0",
   "description": "Management CLI for the DeployPulse CodePush service",
   "main": "./bin/script/cli.js",
@@ -17,7 +17,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deploypulseio/dpctl"
+    "url": "git+https://github.com/deploypulseio/dpctl.git"
   },
   "homepage": "https://github.com/deploypulseio/dpctl#readme",
   "bugs": {
@@ -26,11 +26,18 @@
   },
   "files": [
     "bin/**",
+    "README.md",
     "LICENSE*",
     "NOTICE"
   ],
   "author": "DeployPulse",
   "license": "Apache-2.0",
+  "publishConfig": { 
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "chalk": "^4.1.2",
     "cli-table": "^0.3.11",
@@ -48,7 +55,7 @@
     "rimraf": "^6.1.2",
     "semver": "^7.7.3",
     "simctl": "^3.0.0",
-    "slash": "5.1.0",
+    "slash": "1.0.0",
     "superagent": "^10.2.3",
     "which": "^6.0.0",
     "wordwrap": "1.0.0",
@@ -71,7 +78,6 @@
     "prettier": "^3.7.4",
     "sinon": "21.0.1",
     "superagent-mock": "^5.0.1",
-    "typescript": "^5.9.3",
-    "which": "^3.0.1"
+    "typescript": "^5.9.3"
   }
 }
