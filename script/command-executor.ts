@@ -3,8 +3,10 @@
 
 import AccountManager = require("./management-sdk");
 const childProcess = require("child_process");
+import * as crypto from "crypto";
 import debugCommand from "./commands/debug";
 import * as fs from "fs";
+import * as hashUtils from "./hash-utils";
 import * as chalk from "chalk";
 const g2js = require("gradle-to-js/lib/parser");
 import * as moment from "moment";
@@ -1178,8 +1180,18 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
 
   return sdk
     .isAuthenticated(true)
-    .then((isAuth: boolean): Promise<void> => {
-      return sdk.release(command.appName, command.deploymentName, filePath, command.appStoreVersion, updateMetadata, uploadProgress);
+    .then(async (isAuth: boolean): Promise<void> => {
+      let packageSignature: string | undefined;
+      if (command.privateKeyPath) {
+        const privateKey = fs.readFileSync(command.privateKeyPath, "utf8");
+        const packageHash = isSingleFilePackage
+          ? await hashUtils.hashFile(filePath)
+          : await hashUtils.generatePackageHashFromDirectory(filePath, path.join(filePath, ".."));
+        const signer = crypto.createSign("SHA256");
+        signer.update(packageHash);
+        packageSignature = signer.sign(privateKey, "base64");
+      }
+      return sdk.release(command.appName, command.deploymentName, filePath, command.appStoreVersion, updateMetadata, uploadProgress, packageSignature);
     })
     .then((): void => {
       log(

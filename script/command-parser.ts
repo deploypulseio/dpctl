@@ -626,6 +626,13 @@ yargs
         description: "Percentage of users this release should be available to",
         type: "string",
       })
+      .option("privateKeyPath", {
+        alias: ["private-key", "k"],
+        default: null,
+        demand: false,
+        description: "Path to the RSA private key used to sign this release for code integrity verification",
+        type: "string",
+      })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
         return checkValidReleaseOptions(argv);
       });
@@ -753,6 +760,13 @@ yargs
         demand: false,
         description:
           "Path to where the bundle and sourcemap should be written. If omitted, a bundle and sourcemap will not be written.",
+        type: "string",
+      })
+      .option("privateKeyPath", {
+        alias: ["private-key", "k"],
+        default: null,
+        demand: false,
+        description: "Path to the RSA private key used to sign this release for code integrity verification",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
