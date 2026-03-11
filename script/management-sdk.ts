@@ -307,7 +307,8 @@ class AccountManager {
     filePath: string,
     targetBinaryVersion: string,
     updateMetadata: PackageInfo,
-    uploadProgressCallback?: (progress: number) => void
+    uploadProgressCallback?: (progress: number) => void,
+    packageSignature?: string
   ): Promise<void> {
     return Promise<void>((resolve, reject, notify) => {
       updateMetadata.appVersion = targetBinaryVersion;
@@ -331,7 +332,13 @@ class AccountManager {
         const file: any = fs.createReadStream(packageFile.path);
         request
           .attach("package", file)
-          .field("packageInfo", JSON.stringify(updateMetadata))
+          .field("packageInfo", JSON.stringify(updateMetadata));
+
+        if (packageSignature) {
+          request.field("packageSignature", packageSignature);
+        }
+
+        request
           .on("progress", (event: any) => {
             if (uploadProgressCallback && event && event.total > 0) {
               const currentProgress: number = (event.loaded / event.total) * 100;
