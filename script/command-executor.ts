@@ -1430,7 +1430,7 @@ function sessionList(command: cli.ISessionListCommand): Promise<void> {
 
 function sessionRemove(command: cli.ISessionRemoveCommand): Promise<void> {
   if (os.hostname() === command.machineName) {
-    throw new Error("Cannot remove the current login session via this command. Please run 'code-push-standalone logout' instead.");
+    throw new Error("Cannot remove the current login session via this command. Please run 'dpctl logout' instead.");
   } else {
     return confirm().then((wasConfirmed: boolean): Promise<void> => {
       if (wasConfirmed) {
