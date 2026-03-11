@@ -1200,7 +1200,7 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
 export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> => {
   let bundleName: string = command.bundleName;
   let entryFile: string = command.entryFile;
-  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "CodePush");
+  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "DeployPulse");
   const platform: string = (command.platform = command.platform.toLowerCase());
   const releaseCommand: cli.IReleaseCommand = <any>command;
   // Check for app and deployment exist before releasing an update.
@@ -1430,7 +1430,7 @@ function sessionList(command: cli.ISessionListCommand): Promise<void> {
 
 function sessionRemove(command: cli.ISessionRemoveCommand): Promise<void> {
   if (os.hostname() === command.machineName) {
-    throw new Error("Cannot remove the current login session via this command. Please run 'code-push-standalone logout' instead.");
+    throw new Error("Cannot remove the current login session via this command. Please run 'dpctl logout' instead.");
   } else {
     return confirm().then((wasConfirmed: boolean): Promise<void> => {
       if (wasConfirmed) {
