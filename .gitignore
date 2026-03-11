@@ -3,3 +3,4 @@ dist/
 bin/
 lib/
 *.log
+deploypulseio-dpctl-*
