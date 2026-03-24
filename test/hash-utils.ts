@@ -5,7 +5,7 @@ import * as assert from "assert";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as hashUtils from "../script/hash-utils";
-var mkdirp = require("mkdirp");
+var { mkdirp } = require("mkdirp");
 import * as os from "os";
 import * as path from "path";
 import * as q from "q";
@@ -26,8 +26,7 @@ function unzipToDirectory(zipPath: string, directoryPath: string): Promise<void>
   var deferred: q.Deferred<void> = q.defer<void>();
   var originalCwd: string = process.cwd();
 
-  mkdirp(directoryPath, (err: Error) => {
-    if (err) throw err;
+  mkdirp(directoryPath).then(() => {
     process.chdir(directoryPath);
 
     yauzl.open(zipPath, { lazyEntries: true }, function (err: Error, zipfile: any) {
@@ -36,8 +35,7 @@ function unzipToDirectory(zipPath: string, directoryPath: string): Promise<void>
       zipfile.on("entry", function (entry: any) {
         if (/\/$/.test(entry.fileName)) {
           // directory file names end with '/'
-          mkdirp(entry.fileName, function (err: Error) {
-            if (err) throw err;
+          mkdirp(entry.fileName).then(() => {
             zipfile.readEntry();
           });
         } else {
@@ -45,8 +43,7 @@ function unzipToDirectory(zipPath: string, directoryPath: string): Promise<void>
           zipfile.openReadStream(entry, function (err: Error, readStream: any) {
             if (err) throw err;
             // ensure parent directory exists
-            mkdirp(path.dirname(entry.fileName), function (err: Error) {
-              if (err) throw err;
+            mkdirp(path.dirname(entry.fileName)).then(() => {
               readStream.pipe(fs.createWriteStream(entry.fileName));
               readStream.on("end", function () {
                 zipfile.readEntry();
