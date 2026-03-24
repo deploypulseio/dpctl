@@ -20,6 +20,26 @@ To install and run the DeployPulse CLI, follow these steps:
 4. Release an update for your app.
 5. Check out the debug logs to ensure everything is working as expected.
 
+## Table of Contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Authentication](#authentication)
+  - [Access Keys](#access-keys)
+- [App Management](#app-management)
+  - [Code Signing — Set Public Key](#code-signing--set-public-key)
+  - [App Collaboration](#app-collaboration)
+  - [Deployment Management](#deployment-management)
+- [Releasing Updates](#releasing-updates)
+  - [Releasing Updates (General)](#releasing-updates-general)
+  - [Releasing Updates (React Native)](#releasing-updates-react-native)
+- [Debugging DeployPulse Integration](#debugging-deploypulse-integration)
+- [Patching Update Metadata](#patching-update-metadata)
+- [Promoting Updates](#promoting-updates)
+- [Rolling Back Updates](#rolling-back-updates)
+- [Viewing Release History](#viewing-release-history)
+- [Clearing Release History](#clearing-release-history)
+
 ## Usage
 
 After installing DeployPulse CLI globally, it will be available under `dpctl`.
@@ -122,6 +142,34 @@ you can run the following command:
 ```
 dpctl app ls
 ```
+
+### Code Signing — Set Public Key
+
+To enable bundle integrity verification on an app, upload your RSA public key using the following command:
+
+```shell
+dpctl app set-public-key <appName> <publicKeyPath>
+```
+
+For example:
+
+```shell
+dpctl app set-public-key MyApp-iOS ./public.pem
+```
+
+Once a public key is configured on an app, every release must be signed with the corresponding private key via the `--private-key` option on `dpctl release` or `dpctl release-react`. Any release without a valid signature will be silently rejected by the SDK on-device.
+
+To generate an RSA key pair if you don't already have one:
+
+```shell
+# Generate private key
+openssl genrsa -out private.pem 2048
+
+# Derive public key
+openssl rsa -pubout -in private.pem -out public.pem
+```
+
+Keep `private.pem` secure — store it as a CI/CD secret and never commit it to source control. The `public.pem` is safe to commit.
 
 ### App Collaboration
 
@@ -242,6 +290,7 @@ dpctl release <appName> <updateContents> <targetBinaryVersion>
 [--mandatory]
 [--noDuplicateReleaseError]
 [--rollout <rolloutPercentage>]
+[--private-key <privateKeyPathOrPem>]
 ```
 
 #### App name parameter
@@ -356,6 +405,20 @@ When leveraging the rollout capability, there are a few additional consideration
 
 _NOTE: This parameter can be set using either `--rollout` or `-r`_
 
+#### Private key parameter
+
+This specifies the RSA private key used to sign the release for code integrity verification. The value can be either a path to a PEM file or inline PEM content. This is required when a public key has been configured on the app via `dpctl app set-public-key`.
+
+```shell
+# Sign using a key file
+dpctl release MyApp-iOS ./deploypulse 1.0.0 --private-key ./private.pem
+
+# Sign using inline PEM (useful in CI where the key is stored as an environment variable)
+dpctl release MyApp-iOS ./deploypulse 1.0.0 --private-key "$CODE_SIGNING_KEY"
+```
+
+_NOTE: This parameter can be set using either `--private-key` or `-k`_
+
 ### Releasing Updates (React Native)
 
 ```shell
@@ -375,6 +438,7 @@ dpctl release-react <appName> <platform>
 [--sourcemapOutput <sourcemapOutput>]
 [--targetBinaryVersion <targetBinaryVersion>]
 [--rollout <rolloutPercentage>]
+[--private-key <privateKeyPathOrPem>]
 ```
 
 The `release-react` command is a React Native-specific version of the "vanilla" [`release`](#releasing-app-updates) command, which supports all of the same parameters (e.g. `--mandatory`, `--description`), yet simplifies the process of releasing updates by performing the following additional behavior:
@@ -503,6 +567,14 @@ _NOTE: This parameter can be set using either --sourcemapOutput or -s_
 This specifies the relative path to where the assets, JS bundle and sourcemap files should be written. If left unspecified, the assets, JS bundle and sourcemap will be copied to the `/tmp/dpctl` folder.
 
 _NOTE: This parameter can be set using either --outputDir or -o_
+
+#### Private key parameter
+
+This is the same parameter as the one described in the [above section](#private-key-parameter). Example usage with `release-react`:
+
+```shell
+dpctl release-react MyApp-iOS ios --private-key ./private.pem
+```
 
 ## Debugging DeployPulse Integration
 
