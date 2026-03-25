@@ -21,4 +21,13 @@ jobs:
 
       - run: npm ci
 
+      - run: npm install
+        working-directory: test/resources/TestApp
+
       - run: npm test
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mochawesome-report
+          path: test/resources/TestApp/mochawesome-report/
