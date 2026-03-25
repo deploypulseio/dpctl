@@ -296,6 +296,22 @@ class AccountManager {
     return this.del(urlEncode([`/apps/${appName}/deployments/${deploymentName}`])).then(() => null);
   }
 
+  public getAutoRollbackConfig(appName: string, deploymentName: string): Promise<any> {
+    return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`])).then(
+      (res: JsonResponse) => res.body.autoRollback
+    );
+  }
+
+  public setAutoRollbackConfig(appName: string, deploymentName: string, config: { enabled: boolean; errorRateThreshold: number; minDevices: number }): Promise<any> {
+    return this.put(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`]), JSON.stringify(config)).then(
+      (res: JsonResponse) => res.body.autoRollback
+    );
+  }
+
+  public deleteAutoRollbackConfig(appName: string, deploymentName: string): Promise<void> {
+    return this.del(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`])).then(() => null);
+  }
+
   public getDeploymentMetrics(appName: string, deploymentName: string): Promise<DeploymentMetrics> {
     return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}/metrics`])).then(
       (res: JsonResponse) => res.body.metrics
@@ -519,6 +535,15 @@ class AccountManager {
     contentType: string = "application/json;charset=UTF-8"
   ): Promise<JsonResponse> {
     return this.makeApiRequest("patch", endpoint, requestBody, expectResponseBody, contentType);
+  }
+
+  private put(
+    endpoint: string,
+    requestBody: string,
+    expectResponseBody: boolean = true,
+    contentType: string = "application/json;charset=UTF-8"
+  ): Promise<JsonResponse> {
+    return this.makeApiRequest("put", endpoint, requestBody, expectResponseBody, contentType);
   }
 
   private del(endpoint: string, expectResponseBody: boolean = false): Promise<JsonResponse> {

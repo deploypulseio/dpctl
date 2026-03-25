@@ -363,6 +363,42 @@ export const deploymentList = (command: cli.IDeploymentListCommand, showPackage:
     });
 };
 
+function deploymentAutoRollbackGet(command: cli.IDeploymentAutoRollbackGetCommand): Promise<void> {
+  return sdk.getAutoRollbackConfig(command.appName, command.deploymentName).then((config: any): void => {
+    if (!config) {
+      log(`Auto-rollback is not configured for the "${command.deploymentName}" deployment.`);
+    } else {
+      log(
+        `Auto-rollback for "${command.deploymentName}":\n` +
+          `  Enabled:          ${config.enabled}\n` +
+          `  Error rate:       ${config.errorRateThreshold}%\n` +
+          `  Min devices:      ${config.minDevices}`
+      );
+    }
+  });
+}
+
+function deploymentAutoRollbackEnable(command: cli.IDeploymentAutoRollbackEnableCommand): Promise<void> {
+  return sdk
+    .setAutoRollbackConfig(command.appName, command.deploymentName, {
+      enabled: true,
+      errorRateThreshold: command.errorRate,
+      minDevices: command.minDevices,
+    })
+    .then((): void => {
+      log(
+        `Successfully enabled auto-rollback for the "${command.deploymentName}" deployment ` +
+          `(error rate >= ${command.errorRate}%, min devices: ${command.minDevices}).`
+      );
+    });
+}
+
+function deploymentAutoRollbackDisable(command: cli.IDeploymentAutoRollbackDisableCommand): Promise<void> {
+  return sdk.deleteAutoRollbackConfig(command.appName, command.deploymentName).then((): void => {
+    log(`Successfully disabled auto-rollback for the "${command.deploymentName}" deployment.`);
+  });
+}
+
 function deploymentRemove(command: cli.IDeploymentRemoveCommand): Promise<void> {
   return confirm(
     "Are you sure you want to remove this deployment? Note that its deployment key will be PERMANENTLY unrecoverable."
@@ -519,6 +555,15 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.deploymentList:
         return deploymentList(<cli.IDeploymentListCommand>command);
+
+      case cli.CommandType.deploymentAutoRollbackGet:
+        return deploymentAutoRollbackGet(<cli.IDeploymentAutoRollbackGetCommand>command);
+
+      case cli.CommandType.deploymentAutoRollbackEnable:
+        return deploymentAutoRollbackEnable(<cli.IDeploymentAutoRollbackEnableCommand>command);
+
+      case cli.CommandType.deploymentAutoRollbackDisable:
+        return deploymentAutoRollbackDisable(<cli.IDeploymentAutoRollbackDisableCommand>command);
 
       case cli.CommandType.deploymentRemove:
         return deploymentRemove(<cli.IDeploymentRemoveCommand>command);

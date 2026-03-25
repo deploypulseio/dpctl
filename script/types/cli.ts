@@ -19,6 +19,9 @@ export enum CommandType {
   collaboratorRemove,
   debug,
   deploymentAdd,
+  deploymentAutoRollbackDisable,
+  deploymentAutoRollbackEnable,
+  deploymentAutoRollbackGet,
   deploymentHistory,
   deploymentHistoryClear,
   deploymentList,
@@ -112,6 +115,23 @@ export interface IDeploymentAddCommand extends ICommand {
   appName: string;
   deploymentName: string;
   default: boolean;
+}
+
+export interface IDeploymentAutoRollbackGetCommand extends ICommand {
+  appName: string;
+  deploymentName: string;
+}
+
+export interface IDeploymentAutoRollbackEnableCommand extends ICommand {
+  appName: string;
+  deploymentName: string;
+  errorRate: number;
+  minDevices: number;
+}
+
+export interface IDeploymentAutoRollbackDisableCommand extends ICommand {
+  appName: string;
+  deploymentName: string;
 }
 
 export interface IDeploymentHistoryClearCommand extends ICommand {
