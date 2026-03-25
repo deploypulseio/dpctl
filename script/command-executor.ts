@@ -17,7 +17,7 @@ const plist = require("plist");
 const progress = require("progress");
 const prompt = require("prompt");
 import * as Q from "q";
-const rimraf = require("rimraf");
+const { rimraf } = require("rimraf");
 import * as semver from "semver";
 const Table = require("cli-table");
 const which = require("which");
@@ -266,14 +266,8 @@ function deleteConnectionInfoCache(printMessage: boolean = true): void {
 }
 
 function deleteFolder(folderPath: string): Promise<void> {
-  return Promise<void>((resolve, reject, notify) => {
-    rimraf(folderPath, (err: any) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(<void>null);
-      }
-    });
+  return Q.Promise<void>((resolve, reject) => {
+    rimraf(folderPath).then(() => resolve(<void>null)).catch(reject);
   });
 }
 
