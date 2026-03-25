@@ -638,11 +638,11 @@ yargs
         description: "Percentage of users this release should be available to",
         type: "string",
       })
-      .option("privateKeyPath", {
+      .option("privateKey", {
         alias: ["private-key", "k"],
         default: null,
         demand: false,
-        description: "Path to the RSA private key used to sign this release for code integrity verification",
+        description: "RSA private key for code signing — either a file path (./private.pem) or inline PEM content",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
@@ -774,11 +774,11 @@ yargs
           "Path to where the bundle and sourcemap should be written. If omitted, a bundle and sourcemap will not be written.",
         type: "string",
       })
-      .option("privateKeyPath", {
+      .option("privateKey", {
         alias: ["private-key", "k"],
         default: null,
         demand: false,
-        description: "Path to the RSA private key used to sign this release for code integrity verification",
+        description: "RSA private key for code signing — either a file path (./private.pem) or inline PEM content",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
@@ -1144,6 +1144,7 @@ export function createCommand(): cli.ICommand {
           releaseCommand.mandatory = argv["mandatory"] as any;
           releaseCommand.noDuplicateReleaseError = argv["noDuplicateReleaseError"] as any;
           releaseCommand.rollout = getRolloutValue(argv["rollout"] as any);
+          releaseCommand.privateKey = argv["privateKey"] as any;
         }
         break;
 
@@ -1171,6 +1172,7 @@ export function createCommand(): cli.ICommand {
           releaseReactCommand.rollout = getRolloutValue(argv["rollout"] as any);
           releaseReactCommand.sourcemapOutput = argv["sourcemapOutput"] as any;
           releaseReactCommand.outputDir = argv["outputDir"] as any;
+          releaseReactCommand.privateKey = argv["privateKey"] as any;
         }
         break;
 

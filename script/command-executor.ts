@@ -205,6 +205,21 @@ function appRename(command: cli.IAppRenameCommand): Promise<void> {
   });
 }
 
+export function resolvePrivateKey(value: string): string {
+  return value.trimStart().startsWith("-----BEGIN")
+    ? value                              // inline PEM content
+    : fs.readFileSync(value, "utf8");    // file path
+}
+
+function createRS256JWT(privateKeyPem: string, contentHash: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ contentHash })).toString("base64url");
+  const signer = crypto.createSign("SHA256");
+  signer.update(`${header}.${payload}`);
+  const signature = signer.sign(privateKeyPem, "base64url");
+  return `${header}.${payload}.${signature}`;
+}
+
 function appSetPublicKey(command: cli.IAppSetPublicKeyCommand): Promise<void> {
   const publicKey = fs.readFileSync(command.publicKeyPath, "utf8");
   return sdk.setAppPublicKey(command.appName, publicKey).then((): void => {
@@ -1184,20 +1199,26 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
     rollout: command.rollout,
   };
 
+  const getSignatureJwt = (): Promise<string | undefined> => {
+    if (!command.privateKey) return Q(undefined);
+    const privateKey = resolvePrivateKey(command.privateKey);
+    // For single-file packages, build a single-entry manifest so the contentHash matches
+    // what the SDK computes on-device after extracting the zip (manifest hash, not raw sha256).
+    const hashPromise: Promise<string> = isSingleFilePackage
+      ? hashUtils.hashFile(filePath).then((fileHash: string) => {
+          const map = new Map<string, string>();
+          map.set(path.basename(filePath), fileHash);
+          return new hashUtils.PackageManifest(map).computePackageHash();
+        })
+      : hashUtils.generatePackageHashFromDirectory(filePath, path.join(filePath, ".."));
+    return hashPromise.then((packageHash: string) => createRS256JWT(privateKey, packageHash));
+  };
+
   return sdk
     .isAuthenticated(true)
-    .then(async (isAuth: boolean): Promise<void> => {
-      let packageSignature: string | undefined;
-      if (command.privateKeyPath) {
-        const privateKey = fs.readFileSync(command.privateKeyPath, "utf8");
-        const packageHash = isSingleFilePackage
-          ? await hashUtils.hashFile(filePath)
-          : await hashUtils.generatePackageHashFromDirectory(filePath, path.join(filePath, ".."));
-        const signer = crypto.createSign("SHA256");
-        signer.update(packageHash);
-        packageSignature = signer.sign(privateKey, "base64");
-      }
-      return sdk.release(command.appName, command.deploymentName, filePath, command.appStoreVersion, updateMetadata, uploadProgress, packageSignature);
+    .then((): Promise<string | undefined> => getSignatureJwt())
+    .then((signatureJwt: string | undefined): Promise<void> => {
+      return sdk.release(command.appName, command.deploymentName, filePath, command.appStoreVersion, updateMetadata, uploadProgress, signatureJwt);
     })
     .then((): void => {
       log(

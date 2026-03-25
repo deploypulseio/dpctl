@@ -238,6 +238,10 @@ class AccountManager {
     return this.patch(urlEncode([`/apps/${oldAppName}`]), JSON.stringify({ name: newAppName })).then(() => null);
   }
 
+  public setAppPublicKey(appName: string, publicKey: string): Promise<void> {
+    return this.patch(urlEncode([`/apps/${appName}`]), JSON.stringify({ signingKey: publicKey })).then(() => null);
+  }
+
   public transferApp(appName: string, email: string): Promise<void> {
     return this.post(urlEncode([`/apps/${appName}/transfer/${email}`]), /*requestBody=*/ null, /*expectResponseBody=*/ false).then(
       () => null
@@ -311,7 +315,7 @@ class AccountManager {
     targetBinaryVersion: string,
     updateMetadata: PackageInfo,
     uploadProgressCallback?: (progress: number) => void,
-    packageSignature?: string
+    signatureJwt?: string
   ): Promise<void> {
     return Promise<void>((resolve, reject, notify) => {
       updateMetadata.appVersion = targetBinaryVersion;
@@ -322,7 +326,7 @@ class AccountManager {
       this.attachCredentials(request);
 
       const getPackageFilePromise = Q.Promise((resolve, reject) => {
-        this.packageFileFromPath(filePath)
+        this.packageFileFromPath(filePath, signatureJwt)
           .then((result) => {
             resolve(result);
           })
@@ -337,8 +341,8 @@ class AccountManager {
           .attach("package", file)
           .field("packageInfo", JSON.stringify(updateMetadata));
 
-        if (packageSignature) {
-          request.field("packageSignature", packageSignature);
+        if (signatureJwt) {
+          request.field("packageSignature", signatureJwt);
         }
 
         request
@@ -415,7 +419,7 @@ class AccountManager {
     ).then(() => null);
   }
 
-  private packageFileFromPath(filePath: string) {
+  private packageFileFromPath(filePath: string, signatureJwt?: string) {
     let getPackageFilePromise: Promise<PackageFile>;
     if (fs.lstatSync(filePath).isDirectory()) {
       getPackageFilePromise = Promise<PackageFile>((resolve: (file: PackageFile) => void, reject: (reason: Error) => void): void => {
@@ -451,8 +455,32 @@ class AccountManager {
             zipFile.addFile(file, relativePath);
           }
 
+          if (signatureJwt) {
+            zipFile.addBuffer(Buffer.from(signatureJwt), "CodePush/.codepushrelease");
+          }
+
           zipFile.end();
         });
+      });
+    } else if (signatureJwt) {
+      // Single-file release with a signature: wrap the file + signature entry into a new zip.
+      getPackageFilePromise = Promise<PackageFile>((resolve: (file: PackageFile) => void, reject: (reason: Error) => void): void => {
+        const fileName: string = this.generateRandomFilename(15) + ".zip";
+        const zipFile = new yazl.ZipFile();
+        const writeStream: fs.WriteStream = fs.createWriteStream(fileName);
+
+        zipFile.outputStream
+          .pipe(writeStream)
+          .on("error", (error: Error): void => {
+            reject(error);
+          })
+          .on("close", (): void => {
+            resolve({ isTemporary: true, path: path.join(process.cwd(), fileName) });
+          });
+
+        zipFile.addFile(filePath, path.basename(filePath));
+        zipFile.addBuffer(Buffer.from(signatureJwt), "CodePush/.codepushrelease");
+        zipFile.end();
       });
     } else {
       getPackageFilePromise = Q({ isTemporary: false, path: filePath });

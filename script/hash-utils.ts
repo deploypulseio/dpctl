@@ -227,8 +227,15 @@ export class PackageManifest {
   public static isIgnored(relativeFilePath: string): boolean {
     const __MACOSX = "__MACOSX/";
     const DS_STORE = ".DS_Store";
+    const CODE_PUSH_RELEASE = ".codepushrelease";
 
-    return startsWith(relativeFilePath, __MACOSX) || relativeFilePath === DS_STORE || endsWith(relativeFilePath, "/" + DS_STORE);
+    return (
+      startsWith(relativeFilePath, __MACOSX) ||
+      relativeFilePath === DS_STORE ||
+      endsWith(relativeFilePath, "/" + DS_STORE) ||
+      relativeFilePath === CODE_PUSH_RELEASE ||
+      endsWith(relativeFilePath, "/" + CODE_PUSH_RELEASE)
+    );
   }
 }
 

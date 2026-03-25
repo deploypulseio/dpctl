@@ -164,4 +164,45 @@ describe("Hashing utility", () => {
         done();
       });
   });
+
+  describe(".codepushrelease exclusion", () => {
+    const SIGNED_PACKAGE_PATH = path.join(__dirname, "resources", "signedPackage.zip");
+
+    it("excludes CodePush/.codepushrelease from archive manifest", (done) => {
+      hashUtils.generatePackageManifestFromZip(SIGNED_PACKAGE_PATH).done((manifest: PackageManifest): void => {
+        const map = manifest.toMap();
+        assert.ok(!map.has("CodePush/.codepushrelease"), "manifest should not contain .codepushrelease");
+        assert.equal(map.size, 3);
+        assert.equal(map.get("b.txt"), HASH_B);
+        assert.equal(map.get("c.txt"), HASH_C);
+        assert.equal(map.get("d.txt"), HASH_D);
+        done();
+      });
+    });
+
+    it("produces the same manifest hash as the unsigned equivalent", (done) => {
+      q.all([
+        hashUtils.generatePackageManifestFromZip(TEST_ARCHIVE_FILE_PATH).then((m: PackageManifest) => m.computePackageHash()),
+        hashUtils.generatePackageManifestFromZip(SIGNED_PACKAGE_PATH).then((m: PackageManifest) => m.computePackageHash()),
+      ]).done(([unsignedHash, signedHash]: string[]) => {
+        assert.equal(signedHash, unsignedHash, "signing should not affect the manifest hash");
+        done();
+      });
+    });
+
+    it("excludes .codepushrelease from directory manifest", (done) => {
+      var directory = path.join(TEST_DIRECTORY, "signedPackage");
+
+      unzipToDirectory(SIGNED_PACKAGE_PATH, directory)
+        .then(() => {
+          return hashUtils.generatePackageManifestFromDirectory(directory, directory);
+        })
+        .done((manifest: PackageManifest): void => {
+          const map = manifest.toMap();
+          assert.ok(!map.has("CodePush/.codepushrelease"), "manifest should not contain .codepushrelease");
+          assert.equal(map.size, 3);
+          done();
+        });
+    });
+  });
 });
