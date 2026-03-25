@@ -27,7 +27,7 @@ To install and run the DeployPulse CLI, follow these steps:
   - [Authentication](#authentication)
   - [Access Keys](#access-keys)
 - [App Management](#app-management)
-  - [Code Signing — Set Public Key](#code-signing--set-public-key)
+  - [Code Signing - Set Public Key](#code-signing---set-public-key)
   - [App Collaboration](#app-collaboration)
   - [Deployment Management](#deployment-management)
 - [Releasing Updates](#releasing-updates)
@@ -143,7 +143,7 @@ you can run the following command:
 dpctl app ls
 ```
 
-### Code Signing — Set Public Key
+### Code Signing - Set Public Key
 
 To enable bundle integrity verification on an app, upload your RSA public key using the following command:
 
@@ -169,7 +169,7 @@ openssl genrsa -out private.pem 2048
 openssl rsa -pubout -in private.pem -out public.pem
 ```
 
-Keep `private.pem` secure — store it as a CI/CD secret and never commit it to source control. The `public.pem` is safe to commit.
+Keep `private.pem` secure - store it as a CI/CD secret and never commit it to source control. The `public.pem` is safe to commit.
 
 ### App Collaboration
 
