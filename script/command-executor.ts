@@ -1212,7 +1212,7 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
 export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> => {
   let bundleName: string = command.bundleName;
   let entryFile: string = command.entryFile;
-  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "DeployPulse");
+  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "dpctl");
   const platform: string = (command.platform = command.platform.toLowerCase());
   const releaseCommand: cli.IReleaseCommand = <any>command;
   // Check for app and deployment exist before releasing an update.
