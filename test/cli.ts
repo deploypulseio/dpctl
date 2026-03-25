@@ -266,6 +266,18 @@ export class SdkStub {
   public renameDeployment(): Q.Promise<void> {
     return Q(<void>null);
   }
+
+  public getAutoRollbackConfig(): Q.Promise<any> {
+    return Q({ enabled: true, errorRateThreshold: 5, minDevices: 10 });
+  }
+
+  public setAutoRollbackConfig(): Q.Promise<any> {
+    return Q({ enabled: true, errorRateThreshold: 10, minDevices: 50 });
+  }
+
+  public deleteAutoRollbackConfig(): Q.Promise<void> {
+    return Q(<void>null);
+  }
 }
 
 describe("CLI", () => {
@@ -846,6 +858,84 @@ describe("CLI", () => {
       sinon.assert.calledOnce(renameDeployment);
       sinon.assert.calledOnce(log);
       sinon.assert.calledWithExactly(log, 'Successfully renamed the "Staging" deployment to "c" for the "a" app.');
+
+      done();
+    });
+  });
+
+  it("deploymentAutoRollbackGet displays auto-rollback configuration", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentAutoRollbackGetCommand = {
+      type: cli.CommandType.deploymentAutoRollbackGet,
+      appName: "a",
+      deploymentName: "Production",
+    };
+
+    var getAutoRollbackConfig: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "getAutoRollbackConfig");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(getAutoRollbackConfig);
+      sinon.assert.calledWithExactly(getAutoRollbackConfig, "a", "Production");
+      sinon.assert.calledOnce(log);
+
+      done();
+    });
+  });
+
+  it("deploymentAutoRollbackGet displays message when not configured", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentAutoRollbackGetCommand = {
+      type: cli.CommandType.deploymentAutoRollbackGet,
+      appName: "a",
+      deploymentName: "Production",
+    };
+
+    sandbox.stub(cmdexec.sdk, "getAutoRollbackConfig").returns(Q(null));
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(log);
+      sinon.assert.calledWithExactly(log, 'Auto-rollback is not configured for the "Production" deployment.');
+
+      done();
+    });
+  });
+
+  it("deploymentAutoRollbackEnable enables auto-rollback", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentAutoRollbackEnableCommand = {
+      type: cli.CommandType.deploymentAutoRollbackEnable,
+      appName: "a",
+      deploymentName: "Production",
+      errorRate: 10,
+      minDevices: 50,
+    };
+
+    var setAutoRollbackConfig: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "setAutoRollbackConfig");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(setAutoRollbackConfig);
+      sinon.assert.calledWithExactly(setAutoRollbackConfig, "a", "Production", { enabled: true, errorRateThreshold: 10, minDevices: 50 });
+      sinon.assert.calledOnce(log);
+      sinon.assert.calledWithExactly(
+        log,
+        'Successfully enabled auto-rollback for the "Production" deployment (error rate >= 10%, min devices: 50).'
+      );
+
+      done();
+    });
+  });
+
+  it("deploymentAutoRollbackDisable disables auto-rollback", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentAutoRollbackDisableCommand = {
+      type: cli.CommandType.deploymentAutoRollbackDisable,
+      appName: "a",
+      deploymentName: "Production",
+    };
+
+    var deleteAutoRollbackConfig: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "deleteAutoRollbackConfig");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(deleteAutoRollbackConfig);
+      sinon.assert.calledWithExactly(deleteAutoRollbackConfig, "a", "Production");
+      sinon.assert.calledOnce(log);
+      sinon.assert.calledWithExactly(log, 'Successfully disabled auto-rollback for the "Production" deployment.');
 
       done();
     });
