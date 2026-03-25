@@ -205,6 +205,13 @@ function appRename(command: cli.IAppRenameCommand): Promise<void> {
   });
 }
 
+function appSetPublicKey(command: cli.IAppSetPublicKeyCommand): Promise<void> {
+  const publicKey = fs.readFileSync(command.publicKeyPath, "utf8");
+  return sdk.setAppPublicKey(command.appName, publicKey).then((): void => {
+    log(`Successfully set the public key for the "${command.appName}" app.`);
+  });
+}
+
 export const createEmptyTempReleaseFolder = (folderPath: string) => {
   return deleteFolder(folderPath).then(() => {
     fs.mkdirSync(folderPath);
@@ -467,6 +474,9 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.appRename:
         return appRename(<cli.IAppRenameCommand>command);
+
+      case cli.CommandType.appSetPublicKey:
+        return appSetPublicKey(<cli.IAppSetPublicKeyCommand>command);
 
       case cli.CommandType.appTransfer:
         return appTransfer(<cli.IAppTransferCommand>command);

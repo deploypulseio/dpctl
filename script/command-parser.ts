@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import * as path from "path";
 import * as yargs from "yargs";
 import * as cli from "../script/types/cli";
 import * as chalk from "chalk";
@@ -325,6 +326,15 @@ yargs
       })
       .command("list", "Lists the apps associated with your account", (yargs: yargs.Argv) => appList("list", yargs))
       .command("ls", "Lists the apps associated with your account", (yargs: yargs.Argv) => appList("ls", yargs))
+      .command("set-public-key", "Set the RSA public key used to verify signed releases for an app", (yargs: yargs.Argv) => {
+        isValidCommand = true;
+        yargs
+          .usage(USAGE_PREFIX + " app set-public-key <appName> <publicKeyPath>")
+          .demand(/*count*/ 2, /*max*/ 2)
+          .example("app set-public-key MyApp ./public.pem", 'Sets the RSA public key for "MyApp"');
+
+        addCommonConfiguration(yargs);
+      })
       .command("transfer", "Transfer the ownership of an app to another account", (yargs: yargs.Argv) => {
         yargs
           .usage(USAGE_PREFIX + " app transfer <appName> <email>")
@@ -924,6 +934,17 @@ export function createCommand(): cli.ICommand {
 
               appRenameCommand.currentAppName = arg2;
               appRenameCommand.newAppName = arg3;
+            }
+            break;
+
+          case "set-public-key":
+            if (arg2 && arg3) {
+              cmd = { type: cli.CommandType.appSetPublicKey };
+
+              const appSetPublicKeyCommand = <cli.IAppSetPublicKeyCommand>cmd;
+
+              appSetPublicKeyCommand.appName = arg2;
+              appSetPublicKeyCommand.publicKeyPath = arg3;
             }
             break;
 

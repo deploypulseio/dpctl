@@ -253,6 +253,10 @@ export class SdkStub {
     return Q(<void>null);
   }
 
+  public setAppPublicKey(): Q.Promise<void> {
+    return Q(<void>null);
+  }
+
   public transferApp(): Q.Promise<void> {
     return Q(<void>null);
   }
@@ -593,6 +597,28 @@ describe("CLI", () => {
       sinon.assert.calledOnce(log);
       sinon.assert.calledWithExactly(log, 'Successfully transferred the ownership of app "a" to the account with email "b@b.com".');
 
+      done();
+    });
+  });
+
+  it("appSetPublicKey sets the public key for an app", (done: Mocha.Done): void => {
+    var publicKeyPath = path.join(os.tmpdir(), "test-public.pem");
+    fs.writeFileSync(publicKeyPath, "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n");
+
+    var command: cli.IAppSetPublicKeyCommand = {
+      type: cli.CommandType.appSetPublicKey,
+      appName: "a",
+      publicKeyPath: publicKeyPath,
+    };
+
+    var setAppPublicKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "setAppPublicKey");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(setAppPublicKey);
+      sinon.assert.calledOnce(log);
+      sinon.assert.calledWithExactly(log, 'Successfully set the public key for the "a" app.');
+
+      fs.unlinkSync(publicKeyPath);
       done();
     });
   });

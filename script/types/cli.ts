@@ -12,6 +12,7 @@ export enum CommandType {
   appList,
   appRemove,
   appRename,
+  appSetPublicKey,
   appTransfer,
   collaboratorAdd,
   collaboratorList,
@@ -76,6 +77,11 @@ export interface IAppRemoveCommand extends ICommand {
 export interface IAppRenameCommand extends ICommand {
   currentAppName: string;
   newAppName: string;
+}
+
+export interface IAppSetPublicKeyCommand extends ICommand {
+  appName: string;
+  publicKeyPath: string;
 }
 
 export interface IAppTransferCommand extends ICommand {
