@@ -37,6 +37,7 @@ To install and run the DeployPulse CLI, follow these steps:
 - [Patching Update Metadata](#patching-update-metadata)
 - [Promoting Updates](#promoting-updates)
 - [Rolling Back Updates](#rolling-back-updates)
+- [Auto-Rollback](#auto-rollback)
 - [Viewing Release History](#viewing-release-history)
 - [Clearing Release History](#clearing-release-history)
 
@@ -750,6 +751,38 @@ dpctl rollback MyApp-iOS Production --targetRelease v34
 ```
 
 _NOTE: The release produced by a rollback will be annotated in the output of the `deployment history` command to help identify them more easily._
+
+## Auto-Rollback
+
+Auto-rollback automatically reverts a deployment to its previous release when the error rate on the current release exceeds a configured threshold. This protects your users from bad releases without requiring manual intervention.
+
+### Get auto-rollback configuration
+
+```
+dpctl deployment auto-rollback get <appName> <deploymentName>
+dpctl deployment auto-rollback get MyApp-iOS Production
+```
+
+### Enable auto-rollback
+
+```
+dpctl deployment auto-rollback enable <appName> <deploymentName> [options]
+dpctl deployment auto-rollback enable MyApp-iOS Production --errorRate 10 --minDevices 50
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--errorRate` | `5` | Error rate percentage threshold (1-100) that triggers a rollback |
+| `--minDevices` | `10` | Minimum number of devices that must have reported before auto-rollback can trigger |
+
+### Disable auto-rollback
+
+```
+dpctl deployment auto-rollback disable <appName> <deploymentName>
+dpctl deployment auto-rollback disable MyApp-iOS Production
+```
+
+_NOTE: Auto-rollback configuration can also be managed from the DeployPulse dashboard on the deployment settings page._
 
 ## Viewing Release History
 
