@@ -41,7 +41,9 @@ import {
 
 const configFilePath: string = path.join(process.env.LOCALAPPDATA || process.env.HOME, ".dpctl.config");
 const emailValidator = require("email-validator");
-const packageJson = require("../../package.json");
+const packageJson = require(
+  path.resolve(__dirname, path.basename(path.dirname(__dirname)) === "bin" ? "../../package.json" : "../package.json")
+);
 const parseXml = Q.denodeify(require("xml2js").parseString);
 import Promise = Q.Promise;
 const properties = require("properties");

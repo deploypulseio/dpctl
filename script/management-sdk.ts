@@ -28,7 +28,10 @@ import {
   Session,
 } from "./types";
 
-const packageJson = require("../../package.json");
+// Resolves to cli/package.json whether running from compiled output (bin/script/) or ts-node (script/)
+const packageJson = require(
+  path.resolve(__dirname, path.basename(path.dirname(__dirname)) === "bin" ? "../../package.json" : "../package.json")
+);
 
 interface JsonResponse {
   headers: Headers;

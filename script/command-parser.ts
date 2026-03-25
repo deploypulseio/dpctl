@@ -7,7 +7,9 @@ import * as chalk from "chalk";
 import backslash from "./backslash";
 import parse from "parse-duration";
 
-const packageJson = require("../../package.json");
+const packageJson = require(
+  path.resolve(__dirname, path.basename(path.dirname(__dirname)) === "bin" ? "../../package.json" : "../package.json")
+);
 const ROLLOUT_PERCENTAGE_REGEX: RegExp = /^(100|[1-9][0-9]|[1-9])%?$/;
 const USAGE_PREFIX = "Usage: dpctl";
 
