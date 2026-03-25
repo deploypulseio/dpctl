@@ -1,13 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import * as path from "path";
 import * as yargs from "yargs";
 import * as cli from "../script/types/cli";
 import * as chalk from "chalk";
 import backslash from "./backslash";
 import parse from "parse-duration";
 
-const packageJson = require("../../package.json");
+const packageJson = require(
+  path.resolve(__dirname, path.basename(path.dirname(__dirname)) === "bin" ? "../../package.json" : "../package.json")
+);
 const ROLLOUT_PERCENTAGE_REGEX: RegExp = /^(100|[1-9][0-9]|[1-9])%?$/;
 const USAGE_PREFIX = "Usage: dpctl";
 
@@ -323,6 +326,15 @@ yargs
       })
       .command("list", "Lists the apps associated with your account", (yargs: yargs.Argv) => appList("list", yargs))
       .command("ls", "Lists the apps associated with your account", (yargs: yargs.Argv) => appList("ls", yargs))
+      .command("set-public-key", "Set the RSA public key used to verify signed releases for an app", (yargs: yargs.Argv) => {
+        isValidCommand = true;
+        yargs
+          .usage(USAGE_PREFIX + " app set-public-key <appName> <publicKeyPath>")
+          .demand(/*count*/ 2, /*max*/ 2)
+          .example("app set-public-key MyApp ./public.pem", 'Sets the RSA public key for "MyApp"');
+
+        addCommonConfiguration(yargs);
+      })
       .command("transfer", "Transfer the ownership of an app to another account", (yargs: yargs.Argv) => {
         yargs
           .usage(USAGE_PREFIX + " app transfer <appName> <email>")
@@ -626,11 +638,11 @@ yargs
         description: "Percentage of users this release should be available to",
         type: "string",
       })
-      .option("privateKeyPath", {
+      .option("privateKey", {
         alias: ["private-key", "k"],
         default: null,
         demand: false,
-        description: "Path to the RSA private key used to sign this release for code integrity verification",
+        description: "RSA private key for code signing — either a file path (./private.pem) or inline PEM content",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
@@ -762,11 +774,11 @@ yargs
           "Path to where the bundle and sourcemap should be written. If omitted, a bundle and sourcemap will not be written.",
         type: "string",
       })
-      .option("privateKeyPath", {
+      .option("privateKey", {
         alias: ["private-key", "k"],
         default: null,
         demand: false,
-        description: "Path to the RSA private key used to sign this release for code integrity verification",
+        description: "RSA private key for code signing — either a file path (./private.pem) or inline PEM content",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
@@ -922,6 +934,17 @@ export function createCommand(): cli.ICommand {
 
               appRenameCommand.currentAppName = arg2;
               appRenameCommand.newAppName = arg3;
+            }
+            break;
+
+          case "set-public-key":
+            if (arg2 && arg3) {
+              cmd = { type: cli.CommandType.appSetPublicKey };
+
+              const appSetPublicKeyCommand = <cli.IAppSetPublicKeyCommand>cmd;
+
+              appSetPublicKeyCommand.appName = arg2;
+              appSetPublicKeyCommand.publicKeyPath = arg3;
             }
             break;
 
@@ -1121,6 +1144,7 @@ export function createCommand(): cli.ICommand {
           releaseCommand.mandatory = argv["mandatory"] as any;
           releaseCommand.noDuplicateReleaseError = argv["noDuplicateReleaseError"] as any;
           releaseCommand.rollout = getRolloutValue(argv["rollout"] as any);
+          releaseCommand.privateKey = argv["privateKey"] as any;
         }
         break;
 
@@ -1148,6 +1172,7 @@ export function createCommand(): cli.ICommand {
           releaseReactCommand.rollout = getRolloutValue(argv["rollout"] as any);
           releaseReactCommand.sourcemapOutput = argv["sourcemapOutput"] as any;
           releaseReactCommand.outputDir = argv["outputDir"] as any;
+          releaseReactCommand.privateKey = argv["privateKey"] as any;
         }
         break;
 

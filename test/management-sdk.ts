@@ -414,7 +414,7 @@ function rejectHandler(val: any): void {
 function mockReturn(bodyText: string, statusCode: number, header = {}): void {
   require("superagent-mock")(request, [
     {
-      pattern: "http://localhost/(\\w+)/?",
+      pattern: "https://api.deploypulse.io/(.*)",
       fixtures: function (match: any, params: any): any {
         var isOk = statusCode >= 200 && statusCode < 300;
         if (!isOk) {

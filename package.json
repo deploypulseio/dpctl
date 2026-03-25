@@ -1,6 +1,6 @@
 {
   "name": "@deploypulseio/dpctl",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Management CLI for the DeployPulse CodePush service",
   "main": "./bin/script/cli.js",
   "scripts": {
@@ -10,7 +10,8 @@
     "prepack": "npm run build",
     "prettier": "prettier --write \"./**/*.ts\"",
     "lint": "npx eslint ./script/**/*.ts",
-    "lint:fix": "npx eslint ./script/**/*.ts --fix"
+    "lint:fix": "npx eslint ./script/**/*.ts --fix",
+    "test": "mocha --require ts-node/register ./test/cli.ts ./test/hash-utils.ts ./test/acquisition-sdk.ts ./test/management-sdk.ts --reporter mochawesome --exit"
   },
   "bin": {
     "dpctl": "./bin/script/cli.js"
@@ -30,9 +31,9 @@
     "LICENSE*",
     "NOTICE"
   ],
-  "author": "DeployPulse",
+  "author": "DeployPulse, LLC",
   "license": "Apache-2.0",
-  "publishConfig": { 
+  "publishConfig": {
     "access": "public"
   },
   "engines": {
@@ -75,9 +76,13 @@
     "eslint": "^9.39.2",
     "express": "^5.2.1",
     "mkdirp": "^3.0.1",
+    "mocha": "^11.7.5",
+    "mochawesome": "^7.1.4",
     "prettier": "^3.7.4",
     "sinon": "21.0.1",
     "superagent-mock": "^5.0.1",
-    "typescript": "^5.9.3"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "yauzl": "^3.2.1"
   }
 }

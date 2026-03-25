@@ -5,7 +5,7 @@ import * as assert from "assert";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as hashUtils from "../script/hash-utils";
-var mkdirp = require("mkdirp");
+var { mkdirp } = require("mkdirp");
 import * as os from "os";
 import * as path from "path";
 import * as q from "q";
@@ -26,8 +26,7 @@ function unzipToDirectory(zipPath: string, directoryPath: string): Promise<void>
   var deferred: q.Deferred<void> = q.defer<void>();
   var originalCwd: string = process.cwd();
 
-  mkdirp(directoryPath, (err: Error) => {
-    if (err) throw err;
+  mkdirp(directoryPath).then(() => {
     process.chdir(directoryPath);
 
     yauzl.open(zipPath, { lazyEntries: true }, function (err: Error, zipfile: any) {
@@ -36,8 +35,7 @@ function unzipToDirectory(zipPath: string, directoryPath: string): Promise<void>
       zipfile.on("entry", function (entry: any) {
         if (/\/$/.test(entry.fileName)) {
           // directory file names end with '/'
-          mkdirp(entry.fileName, function (err: Error) {
-            if (err) throw err;
+          mkdirp(entry.fileName).then(() => {
             zipfile.readEntry();
           });
         } else {
@@ -45,8 +43,7 @@ function unzipToDirectory(zipPath: string, directoryPath: string): Promise<void>
           zipfile.openReadStream(entry, function (err: Error, readStream: any) {
             if (err) throw err;
             // ensure parent directory exists
-            mkdirp(path.dirname(entry.fileName), function (err: Error) {
-              if (err) throw err;
+            mkdirp(path.dirname(entry.fileName)).then(() => {
               readStream.pipe(fs.createWriteStream(entry.fileName));
               readStream.on("end", function () {
                 zipfile.readEntry();
@@ -166,5 +163,46 @@ describe("Hashing utility", () => {
         assert.equal(hash, INDEX_HASH);
         done();
       });
+  });
+
+  describe(".codepushrelease exclusion", () => {
+    const SIGNED_PACKAGE_PATH = path.join(__dirname, "resources", "signedPackage.zip");
+
+    it("excludes CodePush/.codepushrelease from archive manifest", (done) => {
+      hashUtils.generatePackageManifestFromZip(SIGNED_PACKAGE_PATH).done((manifest: PackageManifest): void => {
+        const map = manifest.toMap();
+        assert.ok(!map.has("CodePush/.codepushrelease"), "manifest should not contain .codepushrelease");
+        assert.equal(map.size, 3);
+        assert.equal(map.get("b.txt"), HASH_B);
+        assert.equal(map.get("c.txt"), HASH_C);
+        assert.equal(map.get("d.txt"), HASH_D);
+        done();
+      });
+    });
+
+    it("produces the same manifest hash as the unsigned equivalent", (done) => {
+      q.all([
+        hashUtils.generatePackageManifestFromZip(TEST_ARCHIVE_FILE_PATH).then((m: PackageManifest) => m.computePackageHash()),
+        hashUtils.generatePackageManifestFromZip(SIGNED_PACKAGE_PATH).then((m: PackageManifest) => m.computePackageHash()),
+      ]).done(([unsignedHash, signedHash]: string[]) => {
+        assert.equal(signedHash, unsignedHash, "signing should not affect the manifest hash");
+        done();
+      });
+    });
+
+    it("excludes .codepushrelease from directory manifest", (done) => {
+      var directory = path.join(TEST_DIRECTORY, "signedPackage");
+
+      unzipToDirectory(SIGNED_PACKAGE_PATH, directory)
+        .then(() => {
+          return hashUtils.generatePackageManifestFromDirectory(directory, directory);
+        })
+        .done((manifest: PackageManifest): void => {
+          const map = manifest.toMap();
+          assert.ok(!map.has("CodePush/.codepushrelease"), "manifest should not contain .codepushrelease");
+          assert.equal(map.size, 3);
+          done();
+        });
+    });
   });
 });

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import * as assert from "assert";
+import * as fs from "fs";
 import * as sinon from "sinon";
 import Q = require("q");
 import * as path from "path";
@@ -9,6 +10,7 @@ import * as codePush from "../script/types";
 import * as cli from "../script/types/cli";
 import * as cmdexec from "../script/command-executor";
 import * as os from "os";
+import moment = require("moment");
 
 function assertJsonDescribesObject(json: string, object: Object): void {
   // Make sure JSON is indented correctly
@@ -68,7 +70,7 @@ export class SdkStub {
     });
   }
 
-  public patchAccessKey(newName?: string, newTtl?: number): Q.Promise<codePush.AccessKey> {
+  public patchAccessKey(oldName: string, newName?: string, newTtl?: number): Q.Promise<codePush.AccessKey> {
     return Q(<codePush.AccessKey>{
       createdTime: new Date().getTime(),
       name: newName,
@@ -253,6 +255,10 @@ export class SdkStub {
     return Q(<void>null);
   }
 
+  public setAppPublicKey(): Q.Promise<void> {
+    return Q(<void>null);
+  }
+
   public transferApp(): Q.Promise<void> {
     return Q(<void>null);
   }
@@ -275,11 +281,13 @@ describe("CLI", () => {
 
     sandbox = sinon.createSandbox();
 
-    sandbox.stub(cmdexec, "confirm").returns(
+    sandbox.stub(cmdexec, "confirm").callsFake(() =>
       Q.Promise((resolve) => {
         resolve(wasConfirmed);
       })
     );
+
+    (cmdexec as any).sdk = new SdkStub();
 
     sandbox.stub(cmdexec, "createEmptyTempReleaseFolder").callsFake(() => Q.Promise<void>((resolve) => resolve()));
     log = sandbox.stub(cmdexec, "log").callsFake(() => {});
@@ -376,7 +384,7 @@ describe("CLI", () => {
       assert.equal(log.args[0].length, 1);
 
       var actual: string = log.args[0][0];
-      var expected = `Successfully changed the expiration date of the "Test name" access key to Wednesday, August 17, 2016 12:07 PM.`;
+      var expected = `Successfully changed the expiration date of the "Test name" access key to ${moment(NOW + ttl).format("LLLL")}.`;
 
       assert.equal(actual, expected);
       done();
@@ -397,7 +405,7 @@ describe("CLI", () => {
       assert.equal(log.args[0].length, 1);
 
       var actual: string = log.args[0][0];
-      var expected = `Successfully renamed the access key "Test name" to "Updated name" and changed its expiration date to Wednesday, August 17, 2016 12:07 PM.`;
+      var expected = `Successfully renamed the access key "Test name" to "Updated name" and changed its expiration date to ${moment(NOW + ttl).format("LLLL")}.`;
 
       assert.equal(actual, expected);
       done();
@@ -593,6 +601,28 @@ describe("CLI", () => {
       sinon.assert.calledOnce(log);
       sinon.assert.calledWithExactly(log, 'Successfully transferred the ownership of app "a" to the account with email "b@b.com".');
 
+      done();
+    });
+  });
+
+  it("appSetPublicKey sets the public key for an app", (done: Mocha.Done): void => {
+    var publicKeyPath = path.join(os.tmpdir(), "test-public.pem");
+    fs.writeFileSync(publicKeyPath, "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n");
+
+    var command: cli.IAppSetPublicKeyCommand = {
+      type: cli.CommandType.appSetPublicKey,
+      appName: "a",
+      publicKeyPath: publicKeyPath,
+    };
+
+    var setAppPublicKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "setAppPublicKey");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(setAppPublicKey);
+      sinon.assert.calledOnce(log);
+      sinon.assert.calledWithExactly(log, 'Successfully set the public key for the "a" app.');
+
+      fs.unlinkSync(publicKeyPath);
       done();
     });
   });
@@ -838,7 +868,7 @@ describe("CLI", () => {
       assert.equal(log.args[0].length, 1);
 
       var actual: string = log.args[0][0];
-      var expected: codePush.Package[] = [
+      var expected: any[] = [
         {
           description: null,
           appVersion: "1.0.0",
@@ -848,6 +878,7 @@ describe("CLI", () => {
           uploadTime: 1447113596270,
           size: 1,
           label: "v1",
+          metrics: { active: 789, downloaded: 456, failed: 654, installed: 987, totalActive: 1035 },
         },
         {
           description: "New update - this update does a whole bunch of things, including testing linewrapping",
@@ -858,6 +889,7 @@ describe("CLI", () => {
           uploadTime: 1447118476669,
           size: 2,
           label: "v2",
+          metrics: { active: 123, downloaded: 321, failed: 789, installed: 456, totalActive: 1035 },
         },
       ];
 
@@ -973,6 +1005,7 @@ describe("CLI", () => {
       sourceDeploymentName: "Staging",
       destDeploymentName: "Production",
       description: "Promoted",
+      label: null,
       mandatory: true,
       rollout: 25,
       appStoreVersion: "1.0.1",
@@ -999,6 +1032,7 @@ describe("CLI", () => {
       sourceDeploymentName: "Staging",
       destDeploymentName: "Production",
       description: "Promoted",
+      label: null,
       mandatory: true,
       rollout: 25,
       appStoreVersion: null,
@@ -1257,7 +1291,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(os.tmpdir(), "dpctl", bundleName)} --dev false --entry-file index.ios.js --platform ios`
@@ -1301,7 +1335,6 @@ describe("CLI", () => {
           `${path.join(
             "node_modules",
             "react-native",
-            "local-cli",
             "cli.js"
           )} bundle --assets-dest ${packagePath} --bundle-output ${path.join(
             packagePath,
@@ -1347,7 +1380,6 @@ describe("CLI", () => {
           `${path.join(
             "node_modules",
             "react-native",
-            "local-cli",
             "cli.js"
           )} bundle --assets-dest ${packagePath} --bundle-output ${path.join(
             packagePath,
@@ -1393,7 +1425,6 @@ describe("CLI", () => {
           `${path.join(
             "node_modules",
             "react-native",
-            "local-cli",
             "cli.js"
           )} bundle --assets-dest ${packagePath} --bundle-output ${path.join(
             packagePath,
@@ -1439,7 +1470,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(
@@ -1486,7 +1517,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(
@@ -1532,7 +1563,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(
@@ -1581,7 +1612,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `--foo=bar --baz ${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `--foo=bar --baz ${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(os.tmpdir(), "dpctl", bundleName)} --dev false --entry-file index.ios.js --platform ios`
@@ -1689,4 +1720,40 @@ describe("CLI", () => {
       }
     );
   }
+});
+
+describe("resolvePrivateKey", () => {
+  var sandbox: sinon.SinonSandbox;
+
+  beforeEach(() => {
+    sandbox = sinon.createSandbox();
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+  });
+
+  it("returns inline PEM content directly without reading disk", () => {
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\n-----END RSA PRIVATE KEY-----";
+    const readStub = sandbox.stub(fs, "readFileSync");
+    const result = cmdexec.resolvePrivateKey(pem);
+    assert.equal(result, pem);
+    sinon.assert.notCalled(readStub as any);
+  });
+
+  it("reads file content when value is a file path", () => {
+    const fakePem = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----";
+    const readStub = sandbox.stub(fs, "readFileSync").returns(fakePem as any);
+    const result = cmdexec.resolvePrivateKey("./private.pem");
+    assert.equal(result, fakePem);
+    sinon.assert.calledWithExactly(readStub as any, "./private.pem", "utf8");
+  });
+
+  it("handles leading whitespace before PEM header", () => {
+    const pem = "  -----BEGIN PUBLIC KEY-----\ndata\n-----END PUBLIC KEY-----";
+    const readStub = sandbox.stub(fs, "readFileSync");
+    const result = cmdexec.resolvePrivateKey(pem);
+    assert.equal(result, pem);
+    sinon.assert.notCalled(readStub as any);
+  });
 });

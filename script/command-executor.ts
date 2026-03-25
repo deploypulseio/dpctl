@@ -17,7 +17,7 @@ const plist = require("plist");
 const progress = require("progress");
 const prompt = require("prompt");
 import * as Q from "q";
-const rimraf = require("rimraf");
+const { rimraf } = require("rimraf");
 import * as semver from "semver";
 const Table = require("cli-table");
 const which = require("which");
@@ -41,7 +41,9 @@ import {
 
 const configFilePath: string = path.join(process.env.LOCALAPPDATA || process.env.HOME, ".dpctl.config");
 const emailValidator = require("email-validator");
-const packageJson = require("../../package.json");
+const packageJson = require(
+  path.resolve(__dirname, path.basename(path.dirname(__dirname)) === "bin" ? "../../package.json" : "../package.json")
+);
 const parseXml = Q.denodeify(require("xml2js").parseString);
 import Promise = Q.Promise;
 const properties = require("properties");
@@ -203,6 +205,28 @@ function appRename(command: cli.IAppRenameCommand): Promise<void> {
   });
 }
 
+export function resolvePrivateKey(value: string): string {
+  return value.trimStart().startsWith("-----BEGIN")
+    ? value                              // inline PEM content
+    : fs.readFileSync(value, "utf8");    // file path
+}
+
+function createRS256JWT(privateKeyPem: string, contentHash: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ contentHash })).toString("base64url");
+  const signer = crypto.createSign("SHA256");
+  signer.update(`${header}.${payload}`);
+  const signature = signer.sign(privateKeyPem, "base64url");
+  return `${header}.${payload}.${signature}`;
+}
+
+function appSetPublicKey(command: cli.IAppSetPublicKeyCommand): Promise<void> {
+  const publicKey = fs.readFileSync(command.publicKeyPath, "utf8");
+  return sdk.setAppPublicKey(command.appName, publicKey).then((): void => {
+    log(`Successfully set the public key for the "${command.appName}" app.`);
+  });
+}
+
 export const createEmptyTempReleaseFolder = (folderPath: string) => {
   return deleteFolder(folderPath).then(() => {
     fs.mkdirSync(folderPath);
@@ -266,14 +290,8 @@ function deleteConnectionInfoCache(printMessage: boolean = true): void {
 }
 
 function deleteFolder(folderPath: string): Promise<void> {
-  return Promise<void>((resolve, reject, notify) => {
-    rimraf(folderPath, (err: any) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(<void>null);
-      }
-    });
+  return Q.Promise<void>((resolve, reject) => {
+    rimraf(folderPath).then(() => resolve(<void>null)).catch(reject);
   });
 }
 
@@ -471,6 +489,9 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.appRename:
         return appRename(<cli.IAppRenameCommand>command);
+
+      case cli.CommandType.appSetPublicKey:
+        return appSetPublicKey(<cli.IAppSetPublicKeyCommand>command);
 
       case cli.CommandType.appTransfer:
         return appTransfer(<cli.IAppTransferCommand>command);
@@ -1178,20 +1199,26 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
     rollout: command.rollout,
   };
 
+  const getSignatureJwt = (): Promise<string | undefined> => {
+    if (!command.privateKey) return Q(undefined);
+    const privateKey = resolvePrivateKey(command.privateKey);
+    // For single-file packages, build a single-entry manifest so the contentHash matches
+    // what the SDK computes on-device after extracting the zip (manifest hash, not raw sha256).
+    const hashPromise: Promise<string> = isSingleFilePackage
+      ? hashUtils.hashFile(filePath).then((fileHash: string) => {
+          const map = new Map<string, string>();
+          map.set(path.basename(filePath), fileHash);
+          return new hashUtils.PackageManifest(map).computePackageHash();
+        })
+      : hashUtils.generatePackageHashFromDirectory(filePath, path.join(filePath, ".."));
+    return hashPromise.then((packageHash: string) => createRS256JWT(privateKey, packageHash));
+  };
+
   return sdk
     .isAuthenticated(true)
-    .then(async (isAuth: boolean): Promise<void> => {
-      let packageSignature: string | undefined;
-      if (command.privateKeyPath) {
-        const privateKey = fs.readFileSync(command.privateKeyPath, "utf8");
-        const packageHash = isSingleFilePackage
-          ? await hashUtils.hashFile(filePath)
-          : await hashUtils.generatePackageHashFromDirectory(filePath, path.join(filePath, ".."));
-        const signer = crypto.createSign("SHA256");
-        signer.update(packageHash);
-        packageSignature = signer.sign(privateKey, "base64");
-      }
-      return sdk.release(command.appName, command.deploymentName, filePath, command.appStoreVersion, updateMetadata, uploadProgress, packageSignature);
+    .then((): Promise<string | undefined> => getSignatureJwt())
+    .then((signatureJwt: string | undefined): Promise<void> => {
+      return sdk.release(command.appName, command.deploymentName, filePath, command.appStoreVersion, updateMetadata, uploadProgress, signatureJwt);
     })
     .then((): void => {
       log(
@@ -1212,7 +1239,7 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
 export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> => {
   let bundleName: string = command.bundleName;
   let entryFile: string = command.entryFile;
-  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "DeployPulse");
+  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "dpctl");
   const platform: string = (command.platform = command.platform.toLowerCase());
   const releaseCommand: cli.IReleaseCommand = <any>command;
   // Check for app and deployment exist before releasing an update.
@@ -1372,10 +1399,10 @@ export const runReactNativeBundleCommand = (
     Array.prototype.push.apply(reactNativeBundleArgs, envNodeArgs.trim().split(/\s+/));
   }
 
-  const isOldCLI = fs.existsSync(path.join("node_modules", "react-native", "local-cli", "cli.js"));
+  const isNewCLI = fs.existsSync(path.join("node_modules", "react-native", "cli.js"));
 
   Array.prototype.push.apply(reactNativeBundleArgs, [
-    isOldCLI ? path.join("node_modules", "react-native", "local-cli", "cli.js") : path.join("node_modules", "react-native", "cli.js"),
+    isNewCLI ? path.join("node_modules", "react-native", "cli.js") : path.join("node_modules", "react-native", "local-cli", "cli.js"),
     "bundle",
     "--assets-dest",
     outputFolder,
