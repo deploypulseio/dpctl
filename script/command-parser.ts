@@ -415,6 +415,59 @@ yargs
       .command("ls", "List the deployments associated with an app", (yargs: yargs.Argv) => deploymentList("ls", yargs))
       .command("history", "Display the release history for a deployment", (yargs: yargs.Argv) => deploymentHistory("history", yargs))
       .command("h", "Display the release history for a deployment", (yargs: yargs.Argv) => deploymentHistory("h", yargs))
+      .command("auto-rollback", "Manage auto-rollback configuration for a deployment", (yargs: yargs.Argv) => {
+        isValidCommandCategory = true;
+        yargs
+          .usage(USAGE_PREFIX + " deployment auto-rollback <command>")
+          .demand(/*count*/ 1, /*max*/ 1)
+          .command("get", "Get the auto-rollback configuration for a deployment", (yargs: yargs.Argv): void => {
+            isValidCommand = true;
+            yargs
+              .usage(USAGE_PREFIX + " deployment auto-rollback get <appName> <deploymentName>")
+              .demand(/*count*/ 2, /*max*/ 2)
+              .example("deployment auto-rollback get MyApp Production", 'Gets auto-rollback config for the "Production" deployment');
+
+            addCommonConfiguration(yargs);
+          })
+          .command("enable", "Enable auto-rollback for a deployment", (yargs: yargs.Argv): void => {
+            isValidCommand = true;
+            yargs
+              .usage(USAGE_PREFIX + " deployment auto-rollback enable <appName> <deploymentName>")
+              .demand(/*count*/ 2, /*max*/ 2)
+              .option("errorRate", {
+                alias: "e",
+                default: 5,
+                demand: false,
+                description: "Error rate percentage threshold that triggers an automatic rollback (1-100)",
+                type: "number",
+              })
+              .option("minDevices", {
+                alias: "m",
+                default: 10,
+                demand: false,
+                description: "Minimum number of devices that must have reported before auto-rollback can trigger",
+                type: "number",
+              })
+              .example(
+                "deployment auto-rollback enable MyApp Production --errorRate 10 --minDevices 50",
+                'Enables auto-rollback on "Production" with a 10% error rate threshold and 50 device minimum'
+              );
+
+            addCommonConfiguration(yargs);
+          })
+          .command("disable", "Disable auto-rollback for a deployment", (yargs: yargs.Argv): void => {
+            isValidCommand = true;
+            yargs
+              .usage(USAGE_PREFIX + " deployment auto-rollback disable <appName> <deploymentName>")
+              .demand(/*count*/ 2, /*max*/ 2)
+              .example("deployment auto-rollback disable MyApp Production", 'Disables auto-rollback for the "Production" deployment');
+
+            addCommonConfiguration(yargs);
+          })
+          .check((argv: any, aliases: { [aliases: string]: string }): any => isValidCommand);
+
+        addCommonConfiguration(yargs);
+      })
       .check((argv: any, aliases: { [aliases: string]: string }): any => isValidCommand); // Report unrecognized, non-hyphenated command category.
 
     addCommonConfiguration(yargs);
@@ -1074,6 +1127,45 @@ export function createCommand(): cli.ICommand {
               deploymentHistoryCommand.deploymentName = arg3;
               deploymentHistoryCommand.format = argv["format"] as any;
               deploymentHistoryCommand.displayAuthor = argv["displayAuthor"] as any;
+            }
+            break;
+
+          case "auto-rollback":
+            switch (arg2) {
+              case "get":
+                if (arg3 && arg4) {
+                  cmd = { type: cli.CommandType.deploymentAutoRollbackGet };
+
+                  const autoRollbackGetCommand = <cli.IDeploymentAutoRollbackGetCommand>cmd;
+
+                  autoRollbackGetCommand.appName = arg3;
+                  autoRollbackGetCommand.deploymentName = arg4;
+                }
+                break;
+
+              case "enable":
+                if (arg3 && arg4) {
+                  cmd = { type: cli.CommandType.deploymentAutoRollbackEnable };
+
+                  const autoRollbackEnableCommand = <cli.IDeploymentAutoRollbackEnableCommand>cmd;
+
+                  autoRollbackEnableCommand.appName = arg3;
+                  autoRollbackEnableCommand.deploymentName = arg4;
+                  autoRollbackEnableCommand.errorRate = argv["errorRate"] as any;
+                  autoRollbackEnableCommand.minDevices = argv["minDevices"] as any;
+                }
+                break;
+
+              case "disable":
+                if (arg3 && arg4) {
+                  cmd = { type: cli.CommandType.deploymentAutoRollbackDisable };
+
+                  const autoRollbackDisableCommand = <cli.IDeploymentAutoRollbackDisableCommand>cmd;
+
+                  autoRollbackDisableCommand.appName = arg3;
+                  autoRollbackDisableCommand.deploymentName = arg4;
+                }
+                break;
             }
             break;
         }
