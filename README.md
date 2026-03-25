@@ -1,4 +1,11 @@
-# DeployPulse CLI
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+    <img src="assets/logo-light.png" width="300" alt="DeployPulse" />
+  </picture>
+</p>
+
+# dpctl
 
 The DeployPulse CLI is a Node.js application that allows users to interact with the DeployPulse service.
 This is a fork of the code-push-standalone CLI tool open-sourced by Microsoft, modified to work seemlessly DeployPulse.
@@ -19,6 +26,9 @@ To install and run the DeployPulse CLI, follow these steps:
 3. CodePush-ify your app and point it at the deployment you wish to use.
 4. Release an update for your app.
 5. Check out the debug logs to ensure everything is working as expected.
+
+> [!TIP]
+> Using dpctl in a GitHub Actions workflow? Check out [setup-dpctl](https://github.com/deploypulseio/setup-dpctl) for a simple one-step action that handles installation automatically.
 
 ## Table of Contents
 
