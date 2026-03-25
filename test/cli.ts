@@ -1291,7 +1291,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(os.tmpdir(), "dpctl", bundleName)} --dev false --entry-file index.ios.js --platform ios`
@@ -1335,7 +1335,6 @@ describe("CLI", () => {
           `${path.join(
             "node_modules",
             "react-native",
-            "local-cli",
             "cli.js"
           )} bundle --assets-dest ${packagePath} --bundle-output ${path.join(
             packagePath,
@@ -1381,7 +1380,6 @@ describe("CLI", () => {
           `${path.join(
             "node_modules",
             "react-native",
-            "local-cli",
             "cli.js"
           )} bundle --assets-dest ${packagePath} --bundle-output ${path.join(
             packagePath,
@@ -1427,7 +1425,6 @@ describe("CLI", () => {
           `${path.join(
             "node_modules",
             "react-native",
-            "local-cli",
             "cli.js"
           )} bundle --assets-dest ${packagePath} --bundle-output ${path.join(
             packagePath,
@@ -1473,7 +1470,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(
@@ -1520,7 +1517,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(
@@ -1566,7 +1563,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(
@@ -1615,7 +1612,7 @@ describe("CLI", () => {
         assert.equal(spawnCommand, "node");
         assert.equal(
           spawnCommandArgs,
-          `--foo=bar --baz ${path.join("node_modules", "react-native", "local-cli", "cli.js")} bundle --assets-dest ${path.join(
+          `--foo=bar --baz ${path.join("node_modules", "react-native", "cli.js")} bundle --assets-dest ${path.join(
             os.tmpdir(),
             "dpctl"
           )} --bundle-output ${path.join(os.tmpdir(), "dpctl", bundleName)} --dev false --entry-file index.ios.js --platform ios`

@@ -1399,10 +1399,10 @@ export const runReactNativeBundleCommand = (
     Array.prototype.push.apply(reactNativeBundleArgs, envNodeArgs.trim().split(/\s+/));
   }
 
-  const isOldCLI = fs.existsSync(path.join("node_modules", "react-native", "local-cli", "cli.js"));
+  const isNewCLI = fs.existsSync(path.join("node_modules", "react-native", "cli.js"));
 
   Array.prototype.push.apply(reactNativeBundleArgs, [
-    isOldCLI ? path.join("node_modules", "react-native", "local-cli", "cli.js") : path.join("node_modules", "react-native", "cli.js"),
+    isNewCLI ? path.join("node_modules", "react-native", "cli.js") : path.join("node_modules", "react-native", "local-cli", "cli.js"),
     "bundle",
     "--assets-dest",
     outputFolder,
