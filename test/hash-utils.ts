@@ -5,6 +5,7 @@ import * as assert from "assert";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as hashUtils from "../script/hash-utils";
+import * as cmdexec from "../script/command-executor";
 var { mkdirp } = require("mkdirp");
 import * as os from "os";
 import * as path from "path";
@@ -203,6 +204,76 @@ describe("Hashing utility", () => {
           assert.equal(map.size, 3);
           done();
         });
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // The signed hash must be keyed the same way the zip is, or the signature covers keys the package does
+  // not contain. path.join(dir, "..") and path.dirname(dir) differ only for "." and "./", which is
+  // exactly what `dpctl release MyApp . 1.0.0` passes.
+  // ---------------------------------------------------------------------------
+
+  describe("signed manifest base path", () => {
+    let workDir: string;
+    let previousCwd: string;
+
+    beforeEach(() => {
+      workDir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-hash-base-"));
+      fs.writeFileSync(path.join(workDir, "main.jsbundle"), "bundle contents");
+      previousCwd = process.cwd();
+      process.chdir(workDir);
+    });
+
+    afterEach(() => {
+      process.chdir(previousCwd);
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it('keys the manifest the way the zip does when the release path is "."', (done) => {
+      hashUtils.generatePackageManifestFromDirectory(".", path.dirname(".")).then((manifest: PackageManifest) => {
+        const keys = Array.from(manifest.toMap().keys());
+        assert.deepStrictEqual(keys, ["main.jsbundle"], `got ${JSON.stringify(keys)}`);
+        done();
+      }, done);
+    });
+
+    it("the CLI keys the signed manifest against the base the SDK zips with", () => {
+      assert.strictEqual(cmdexec.signatureManifestBase("."), path.dirname("."));
+      assert.strictEqual(cmdexec.signatureManifestBase("."), ".");
+      assert.strictEqual(cmdexec.signatureManifestBase("/tmp/build"), "/tmp");
+      assert.notStrictEqual(cmdexec.signatureManifestBase("."), path.join(".", ".."));
+    });
+
+    it('path.join(dir, "..") is NOT path.dirname(dir) for "."', () => {
+      // The test above only bites while these disagree.
+      assert.strictEqual(path.dirname("."), ".");
+      assert.strictEqual(path.join(".", ".."), "..");
+      assert.notStrictEqual(path.join(".", ".."), path.dirname("."));
+    });
+
+    it('signs a hash that matches the zip when the release path is "."', (done) => {
+      // The base the CLI actually passes, not a copy of it.
+      const signed = hashUtils.generatePackageHashFromDirectory(".", cmdexec.signatureManifestBase("."));
+      const onDevice = hashUtils.generatePackageManifestFromDirectory(".", path.dirname(".")).then((manifest: PackageManifest) =>
+        manifest.computePackageHash()
+      );
+
+      q.all([signed, onDevice]).then((hashes: string[]) => {
+        assert.strictEqual(hashes[0], hashes[1], "the signed hash must match what the zip implies");
+        done();
+      }, done);
+    });
+
+    it('would not have matched with the old path.join(dir, "..") base', (done) => {
+      // Keeps the fix load-bearing rather than cosmetic.
+      const buggy = hashUtils.generatePackageHashFromDirectory(".", path.join(".", ".."));
+      const onDevice = hashUtils.generatePackageManifestFromDirectory(".", path.dirname(".")).then((manifest: PackageManifest) =>
+        manifest.computePackageHash()
+      );
+
+      q.all([buggy, onDevice]).then((hashes: string[]) => {
+        assert.notStrictEqual(hashes[0], hashes[1], "the old base produced a hash that verified nowhere");
+        done();
+      }, done);
     });
   });
 });

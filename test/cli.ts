@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import * as assert from "assert";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as sinon from "sinon";
 import Q = require("q");
@@ -9,6 +10,7 @@ import * as path from "path";
 import * as codePush from "../script/types";
 import * as cli from "../script/types/cli";
 import * as cmdexec from "../script/command-executor";
+import * as hashUtils from "../script/hash-utils";
 import * as os from "os";
 import moment = require("moment");
 
@@ -221,6 +223,10 @@ export class SdkStub {
 
   public promote(): Q.Promise<void> {
     return Q(<void>null);
+  }
+
+  public isAuthenticated(): Q.Promise<boolean> {
+    return Q(true);
   }
 
   public release(): Q.Promise<string> {
@@ -1796,6 +1802,49 @@ describe("CLI", () => {
         done();
       })
       .done();
+  });
+
+  it("signs a directory release against the base the package is zipped with", (done: Mocha.Done): void => {
+    // The call site, not the helper: releasing "." used to sign keys the zip did not contain, and still
+    // reported success.
+    const { privateKey } = crypto.generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+
+    const bases: string[] = [];
+    sandbox.stub(<any>hashUtils, "generatePackageHashFromDirectory").callsFake((dir: string, base: string) => {
+      bases.push(base);
+      return Q("deadbeef");
+    });
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-sign-"));
+    fs.writeFileSync(path.join(dir, "main.jsbundle"), "bundle contents");
+    const previousCwd = process.cwd();
+    process.chdir(dir);
+
+    const finish = (error?: any): void => {
+      process.chdir(previousCwd);
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (error) return done(error);
+      assert.deepStrictEqual(bases, [path.dirname(".")], "must key the manifest the way the package is zipped");
+      done();
+    };
+
+    cmdexec
+      .execute(<any>{
+        type: cli.CommandType.release,
+        appName: "a",
+        deploymentName: "Staging",
+        description: "",
+        mandatory: false,
+        rollout: null,
+        appStoreVersion: "1.0.0",
+        package: ".",
+        privateKey,
+      })
+      .done(() => finish(), finish);
   });
 
   function releaseHelperFunction(command: cli.IReleaseCommand, done: Mocha.Done, expectedError: string): void {
