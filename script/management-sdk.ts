@@ -230,9 +230,12 @@ class AccountManager {
     return this.get(urlEncode([`/apps/${appName}`])).then((res: JsonResponse) => res.body.app);
   }
 
-  public addApp(appName: string): Promise<App> {
-    const app: App = { name: appName };
-    return this.post(urlEncode(["/apps/"]), JSON.stringify(app), /*expectResponseBody=*/ false).then(() => app);
+  public addApp(appName: string, platform?: string): Promise<App> {
+    const app: App = { name: appName, ...(platform ? { platform } : {}) };
+    // Resolve with the server's app, not the one sent: only its copy carries generated fields.
+    return this.post(urlEncode(["/apps/"]), JSON.stringify(app), /*expectResponseBody=*/ true).then(
+      (res: JsonResponse) => res.body.app as App
+    );
   }
 
   public removeApp(appName: string): Promise<void> {

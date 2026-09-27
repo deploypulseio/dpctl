@@ -348,6 +348,21 @@ yargs
         yargs
           .usage(USAGE_PREFIX + " app add <appName>")
           .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option arguments
+          .example("app add MyApp --platform ios", 'Adds a React Native iOS app named "MyApp"')
+          .option("platform", {
+            alias: "p",
+            default: null,
+            demand: false,
+            description: 'Target platform: "ios", "android", "expo-cng-ios" or "expo-cng-android". Cannot be changed after creation.',
+            type: "string",
+          })
+          .check((argv: any): any => {
+            const validPlatforms = ["ios", "android", "expo-cng-ios", "expo-cng-android"];
+            if (argv.platform && !validPlatforms.includes(argv.platform)) {
+              throw new Error("--platform must be one of: " + validPlatforms.join(", "));
+            }
+            return true;
+          })
           .example("app add MyApp", 'Adds app "MyApp"');
 
         addCommonConfiguration(yargs);
@@ -1050,7 +1065,9 @@ export function createCommand(): cli.ICommand {
             if (arg2) {
               cmd = { type: cli.CommandType.appAdd };
 
-              (<cli.IAppAddCommand>cmd).appName = arg2;
+              const appAddCommand = <cli.IAppAddCommand>cmd;
+              appAddCommand.appName = arg2;
+              appAddCommand.platform = argv["platform"] as any;
             }
             break;
 

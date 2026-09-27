@@ -7,6 +7,7 @@ import * as crypto from "crypto";
 import debugCommand from "./commands/debug";
 import * as fs from "fs";
 import * as hashUtils from "./hash-utils";
+import { appPlatformLabel, assertReleasePlatform, checkReleaseProjectKind } from "./ota-runtime";
 import * as chalk from "chalk";
 const g2js = require("gradle-to-js/lib/parser");
 import * as moment from "moment";
@@ -204,7 +205,7 @@ function accessKeyRemove(command: cli.IAccessKeyRemoveCommand): Promise<void> {
 }
 
 function appAdd(command: cli.IAppAddCommand): Promise<void> {
-  return sdk.addApp(command.appName).then((app: App): Promise<void> => {
+  return sdk.addApp(command.appName, command.platform).then((app: App): Promise<void> => {
     log('Successfully added the "' + command.appName + '" app, along with the following default deployments:');
     const deploymentListCommand: cli.IDeploymentListCommand = {
       type: cli.CommandType.deploymentList,
@@ -247,6 +248,14 @@ function appRename(command: cli.IAppRenameCommand): Promise<void> {
 /** Must match the base packageFileFromPath zips with, or the signature covers keys the package lacks. */
 export function signatureManifestBase(filePath: string): string {
   return path.dirname(filePath);
+}
+
+// undefined = the app couldn't be fetched (the release itself will report why); null = no platform set.
+function getAppPlatform(appName: string): Promise<string | null | undefined> {
+  return sdk.getApp(appName).then(
+    (app: App): string | null => (app && app.platform) || null,
+    (): undefined => undefined
+  );
 }
 
 export function resolvePrivateKey(value: string): string {
@@ -754,10 +763,10 @@ function printAppList(format: string, apps: App[]): void {
   if (format === "json") {
     printJson(apps);
   } else if (format === "table") {
-    const headers = ["Name", "Deployments"];
+    const headers = ["Name", "Platform", "Deployments"];
     printTable(headers, (dataSource: any[]): void => {
       apps.forEach((app: App, index: number): void => {
-        const row = [app.name, wordwrap(50)(app.deployments.join(", "))];
+        const row = [app.name, appPlatformLabel(app.platform), wordwrap(50)(app.deployments.join(", "))];
         dataSource.push(row);
       });
     });
@@ -1337,7 +1346,12 @@ export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> =
   return (
     sdk
       .getDeployment(command.appName, command.deploymentName)
-      .then((): any => {
+      .then(() => getAppPlatform(command.appName))
+      .then((appPlatform: string | null | undefined): any => {
+        assertReleasePlatform({ appName: command.appName, deploymentName: command.deploymentName, appPlatform, releasePlatform: platform });
+        const projectWarning = checkReleaseProjectKind({ appName: command.appName, appPlatform, projectRoot: process.cwd() });
+        if (projectWarning) console.warn(chalk.yellow("[Warning] " + projectWarning));
+
         releaseCommand.package = outputFolder;
 
         switch (platform) {
