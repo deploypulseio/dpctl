@@ -8,7 +8,7 @@ import Q = require("q");
 import superagent = require("superagent");
 import * as recursiveFs from "recursive-fs";
 import * as yazl from "yazl";
-import slash from "slash";
+import slash = require("slash");
 
 import Promise = Q.Promise;
 
