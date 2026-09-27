@@ -47,6 +47,8 @@ export interface ICommand {
 export interface IAccessKeyAddCommand extends ICommand {
   name: string;
   ttl?: number;
+  scopes?: string[];
+  appNames?: string[];
 }
 
 export interface IAccessKeyPatchCommand extends ICommand {

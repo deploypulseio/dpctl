@@ -13,11 +13,16 @@ export interface AccessKey extends AccessKeyBase {
   /*generated*/ createdTime?: number;
   expires: number;
   /*generated*/ isSession?: boolean;
+  /*generated*/ scopes?: string[];
+  /*generated*/ appIds?: string[] | null;
+  /*generated*/ appNames?: string[] | null;
 }
 
 /*in*/
 export interface AccessKeyRequest extends AccessKeyBase {
   ttl?: number;
+  scopes?: string[];
+  appIds?: string[];
 }
 
 /*out*/
@@ -109,6 +114,7 @@ export interface CollaboratorMap {
 
 /*inout*/
 export interface App {
+  /*generated*/ id?: string;
   /*generated*/ collaborators?: CollaboratorMap;
   /*key*/ name: string;
   /*generated*/ deployments?: string[];
