@@ -403,6 +403,16 @@ describe("Management SDK", () => {
       (error: Error) => done()
     );
   });
+
+  it("getAutoRollbackConfig reads autoRollbackConfig, the key the API actually sends", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ autoRollbackConfig: { enabled: true, threshold: 25 } }), 200);
+    manager.getAutoRollbackConfig("appName", "Staging").done((config: any) => {
+      assert.ok(config, "expected the config, not undefined");
+      assert.strictEqual(config.enabled, true);
+      assert.strictEqual(config.threshold, 25);
+      done();
+    }, rejectHandler);
+  });
 });
 
 // Helper method that is used everywhere that an assert.fail() is needed in a promise handler

@@ -80,6 +80,12 @@ let connectionInfo: ILoginConnectionInfo;
 export const confirm = (message: string = "Are you sure?"): Promise<boolean> => {
   message += " (y/N):";
   return Promise<boolean>((resolve, reject, notify): void => {
+    if (!process.stdin.isTTY) {
+      log(chalk.cyan(message) + " no (not a terminal, so nothing was asked). Nothing was changed.");
+      resolve(false);
+      return;
+    }
+
     prompt.message = "";
     prompt.delimiter = "";
 
@@ -94,6 +100,10 @@ export const confirm = (message: string = "Are you sure?"): Promise<boolean> => 
         },
       },
       (err: any, result: any): void => {
+        if (err || !result) {
+          resolve(false);
+          return;
+        }
         const accepted = result.response && result.response.toLowerCase() === "y";
         const rejected = !result.response || result.response.toLowerCase() === "n";
 
@@ -289,9 +299,10 @@ function deleteConnectionInfoCache(printMessage: boolean = true): void {
   } catch (ex) {}
 }
 
-function deleteFolder(folderPath: string): Promise<void> {
+/** rimraf 4+ needs `glob` to expand a pattern. Off by default so a literal path like "build[1]" is safe. */
+export function deleteFolder(folderPath: string, glob: boolean = false): Promise<void> {
   return Q.Promise<void>((resolve, reject) => {
-    rimraf(folderPath).then(() => resolve(<void>null)).catch(reject);
+    rimraf(folderPath, { glob }).then(() => resolve(<void>null)).catch(reject);
   });
 }
 
@@ -1361,7 +1372,7 @@ export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> =
       })
       // This is needed to clear the react native bundler cache:
       // https://github.com/facebook/react-native/issues/4289
-      .then(() => deleteFolder(`${os.tmpdir()}/react-*`))
+      .then(() => deleteFolder(`${os.tmpdir()}/react-*`, /*glob*/ true))
       .then(() =>
         runReactNativeBundleCommand(
           bundleName,

@@ -125,3 +125,68 @@ describe("command line", function () {
 // Two dependencies of the destructive-command path, kept honest here because both broke silently once.
 // ---------------------------------------------------------------------------
 
+
+describe("confirm on a non-terminal", () => {
+  const cmdexec = require("../script/command-executor");
+
+  it("declines instead of hanging when nobody can answer", function (done: Mocha.Done) {
+    // Forced, not inherited: stdin is piped under CI but a terminal under `npm test`.
+    this.timeout(5000);
+    const descriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    const restore = (): void => {
+      if (descriptor) Object.defineProperty(process.stdin, "isTTY", descriptor);
+      else delete (process.stdin as any).isTTY;
+    };
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        restore();
+        done(new Error("confirm never settled: it is hanging again"));
+      }
+    }, 3000);
+
+    cmdexec.confirm("Delete it?").then(
+      (answer: boolean) => {
+        settled = true;
+        clearTimeout(timer);
+        restore();
+        assert.strictEqual(answer, false, "an unanswered destructive question is a no");
+        done();
+      },
+      (error: any) => {
+        restore();
+        done(error);
+      }
+    );
+  });
+});
+
+describe("deleteFolder", () => {
+  const cmdexec = require("../script/command-executor");
+
+  it("only expands a pattern when asked to", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-glob-test-"));
+    const pattern = path.join(os.tmpdir(), "dpctl-glob-test-*");
+
+    await cmdexec.deleteFolder(pattern);
+    assert.strictEqual(fs.existsSync(dir), true, "without glob a pattern is a literal path, so nothing matches");
+
+    await cmdexec.deleteFolder(pattern, true);
+    assert.strictEqual(fs.existsSync(dir), false, "the glob flag is what actually deletes");
+  });
+
+  it("leaves glob off by default, so a literal path with metacharacters is safe", async () => {
+    // An --outputDir like "build[1]" is a real directory name, not a pattern.
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-literal-"));
+    const literal = path.join(parent, "build[1]");
+    fs.mkdirSync(literal);
+    fs.writeFileSync(path.join(literal, "keep.txt"), "x");
+
+    await cmdexec.deleteFolder(literal);
+    assert.strictEqual(fs.existsSync(literal), false, "the literal directory itself is removed");
+
+    fs.rmSync(parent, { recursive: true, force: true });
+  });
+});
