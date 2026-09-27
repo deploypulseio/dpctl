@@ -11,7 +11,7 @@
     "prettier": "prettier --write \"./**/*.ts\"",
     "lint": "npx eslint ./script/**/*.ts",
     "lint:fix": "npx eslint ./script/**/*.ts --fix",
-    "test": "mocha --require ts-node/register ./test/cli.ts ./test/hash-utils.ts ./test/acquisition-sdk.ts ./test/management-sdk.ts --reporter mochawesome --exit"
+    "test": "mocha --require ts-node/register ./test/cli.ts ./test/hash-utils.ts ./test/acquisition-sdk.ts ./test/management-sdk.ts ./test/command-parser.ts --reporter mochawesome --exit"
   },
   "bin": {
     "dpctl": "./bin/script/cli.js"
@@ -37,7 +37,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=18"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "dependencies": {
     "chalk": "^4.1.2",

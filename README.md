@@ -19,6 +19,8 @@ To install and run the DeployPulse CLI, follow these steps:
 3. Build the CLI by running `npm run build`.
 4. Install CLI globally by running `npm install -g`.
 
+Before upgrading a CI pipeline to 1.2.0, note two changes: an unknown flag is now an error rather than silently ignored, and a rejected command exits 1 rather than 0. A pipeline that passed on a misspelled flag will now fail.
+
 ## Getting started
 
 1. Create a [DeployPulse account](https://deploypulse.io/register).

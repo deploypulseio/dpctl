@@ -18,7 +18,13 @@ const USAGE_PREFIX = "Usage: dpctl";
 let isValidCommandCategory = false;
 // Commands are the verb following the command category (e.g.:  "add" in "app add").
 let isValidCommand = false;
+let lastFailMessage: string | undefined;
 let wasHelpShown = false;
+
+/** True when yargs already printed why the arguments were rejected, so callers need not add their own. */
+export function failureReported(): boolean {
+  return !!lastFailMessage;
+}
 
 export function showHelp(showRootDescription?: boolean): void {
   if (!wasHelpShown) {
@@ -121,7 +127,22 @@ function addCommonConfiguration(yargs: yargs.Argv): void {
   yargs
     .wrap(/*columnLimit*/ null)
     .string("_") // Interpret non-hyphenated arguments as strings (e.g. an app version of '1.10').
-    .fail((msg: string) => showHelp()); // Suppress the default error message.
+    // strictOptions, NOT strict: unknown flags become errors instead of being silently dropped, which is
+    // what let `--deployment Production` ship releases to Staging. Full .strict() also validates
+    // positionals, and this parser declares only positional counts, so every command would fail with
+    // "Unknown arguments: MyApp, ios".
+    .strictOptions()
+    // Keep yargs' actual complaint ("Unknown argument: deployment"); a bare showHelp() throws away the
+    // one line that says what was wrong.
+    .fail((msg: string) => {
+      // yargs runs this handler once per nesting level (root, category, subcommand, ...), so the
+      // same message arrives several times for a single mistake. Print each one once.
+      if (msg && msg !== lastFailMessage) {
+        lastFailMessage = msg;
+        console.error(chalk.red(`[Error]  ${msg}`));
+      }
+      showHelp();
+    });
 }
 
 function appList(commandName: string, yargs: yargs.Argv): void {
@@ -543,7 +564,6 @@ yargs
       })
       .option("rollout", {
         alias: "r",
-        default: null,
         demand: false,
         description:
           "Percentage of users this release should be immediately available to. This attribute can only be increased from the current value.",
@@ -557,7 +577,10 @@ yargs
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
-        return isValidRollout(argv);
+        if (!isValidRollout(argv)) {
+          throw new Error("--rollout must be a whole percentage from 1 to 100, e.g. 25 or 25%");
+        }
+        return true;
       });
 
     addCommonConfiguration(yargs);
@@ -628,7 +651,10 @@ yargs
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
-        return isValidRollout(argv);
+        if (!isValidRollout(argv)) {
+          throw new Error("--rollout must be a whole percentage from 1 to 100, e.g. 25 or 25%");
+        }
+        return true;
       });
 
     addCommonConfiguration(yargs);
@@ -650,7 +676,9 @@ yargs
         'Releases the "./platforms/ios/www" folder and all its contents to the "MyApp" app\'s "Production" deployment, targeting the 1.0.3 binary version and rolling out to about 20% of the users'
       )
       .option("deploymentName", {
-        alias: "d",
+        // "deployment" is an alias because the docs used it for a long time while yargs silently
+        // swallowed it and released to Staging. All three spellings, so no pipeline breaks on strict mode.
+        alias: ["d", "deployment"],
         default: "Staging",
         demand: false,
         description: "Deployment to release the update to",
@@ -692,14 +720,22 @@ yargs
         type: "string",
       })
       .option("privateKey", {
-        alias: ["private-key", "k"],
+        // `privateKeyPath` / `private-key-path` are what upstream code-push called this and what older
+        // docs still show; accepted so a migrated script does not hard-fail under strictOptions.
+        alias: ["private-key", "privateKeyPath", "private-key-path", "k"],
         default: null,
         demand: false,
-        description: "RSA private key for code signing — either a file path (./private.pem) or inline PEM content",
+        description: "RSA private key for code signing: either a file path (./private.pem) or inline PEM content",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
-        return checkValidReleaseOptions(argv);
+        if (!isValidRollout(argv)) {
+          throw new Error("--rollout must be a whole percentage from 1 to 100, e.g. 25 or 25%");
+        }
+        if (!argv["deploymentName"]) {
+          throw new Error("--deploymentName needs a value, e.g. --deploymentName Staging");
+        }
+        return true;
       });
 
     addCommonConfiguration(yargs);
@@ -729,7 +765,9 @@ yargs
         type: "string",
       })
       .option("deploymentName", {
-        alias: "d",
+        // "deployment" is an alias because the docs used it for a long time while yargs silently
+        // swallowed it and released to Staging. All three spellings, so no pipeline breaks on strict mode.
+        alias: ["d", "deployment"],
         default: "Staging",
         demand: false,
         description: "Deployment to release the update to",
@@ -828,14 +866,22 @@ yargs
         type: "string",
       })
       .option("privateKey", {
-        alias: ["private-key", "k"],
+        // `privateKeyPath` / `private-key-path` are what upstream code-push called this and what older
+        // docs still show; accepted so a migrated script does not hard-fail under strictOptions.
+        alias: ["private-key", "privateKeyPath", "private-key-path", "k"],
         default: null,
         demand: false,
-        description: "RSA private key for code signing — either a file path (./private.pem) or inline PEM content",
+        description: "RSA private key for code signing: either a file path (./private.pem) or inline PEM content",
         type: "string",
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => {
-        return checkValidReleaseOptions(argv);
+        if (!isValidRollout(argv)) {
+          throw new Error("--rollout must be a whole percentage from 1 to 100, e.g. 25 or 25%");
+        }
+        if (!argv["deploymentName"]) {
+          throw new Error("--deploymentName needs a value, e.g. --deploymentName Staging");
+        }
+        return true;
       });
 
     addCommonConfiguration(yargs);
@@ -884,10 +930,27 @@ yargs
       .example("whoami", "Display the account info for the current login session");
     addCommonConfiguration(yargs);
   })
+  // Without this yargs falls back to $0 and prints the entry file, so every subcommand listing read
+  // "cli.js app add" instead of "dpctl app add".
+  .scriptName("dpctl")
   .alias("v", "version")
+  // -h is help, the way it is in every other CLI. Declared explicitly so no option can claim it later.
+  .alias("h", "help")
   .version(packageJson.version)
   .wrap(/*columnLimit*/ null)
-  .fail((msg: string) => showHelp(/*showRootDescription*/ true)).argv; // Suppress the default error message.
+  // Same treatment as the per-command handler above: say what was wrong, then show help without the
+  // banner. This used to print the banner and throw `msg` away, so `dpctl --badflag` answered a typo with
+  // six lines of ASCII art and no explanation. The greeting for a bare `dpctl` comes from cli.ts, not here.
+  .fail((msg: string) => {
+    // A bare `dpctl` also lands here (yargs demands a command), and that is not a mistake to report: it
+    // gets the greeting. Anything else typed something wrong and wants the reason, not the banner.
+    const typedSomething = process.argv.slice(2).length > 0;
+    if (typedSomething && msg && msg !== lastFailMessage) {
+      lastFailMessage = msg;
+      console.error(chalk.red(`[Error]  ${msg}`));
+    }
+    showHelp(/*showRootDescription*/ !typedSomething);
+  }).argv;
 
 export function createCommand(): cli.ICommand {
   let cmd: cli.ICommand;
