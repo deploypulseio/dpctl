@@ -215,6 +215,11 @@ function appRename(command: cli.IAppRenameCommand): Promise<void> {
   });
 }
 
+/** Must match the base packageFileFromPath zips with, or the signature covers keys the package lacks. */
+export function signatureManifestBase(filePath: string): string {
+  return path.dirname(filePath);
+}
+
 export function resolvePrivateKey(value: string): string {
   return value.trimStart().startsWith("-----BEGIN")
     ? value                              // inline PEM content
@@ -1266,7 +1271,7 @@ export const release = (command: cli.IReleaseCommand): Promise<void> => {
           map.set(path.basename(filePath), fileHash);
           return new hashUtils.PackageManifest(map).computePackageHash();
         })
-      : hashUtils.generatePackageHashFromDirectory(filePath, path.join(filePath, ".."));
+      : hashUtils.generatePackageHashFromDirectory(filePath, signatureManifestBase(filePath));
     return hashPromise.then((packageHash: string) => createRS256JWT(privateKey, packageHash));
   };
 
