@@ -120,11 +120,40 @@ export const confirm = (message: string = "Are you sure?"): Promise<boolean> => 
   });
 };
 
+function formatKeyScope(scopes: string[] | undefined, appNames: string[] | null | undefined): string {
+  const access = !scopes || !scopes.length || scopes.includes("full") ? "full access" : "read only";
+  const apps = appNames && appNames.length ? appNames.join(", ") : "all apps";
+  return `${access}, ${apps}`;
+}
+
 function accessKeyAdd(command: cli.IAccessKeyAddCommand): Promise<void> {
-  return sdk.addAccessKey(command.name, command.ttl).then((accessKey: AccessKey) => {
-    log(`Successfully created the "${command.name}" access key: ${accessKey.key}`);
-    log("Make sure to save this key value somewhere safe, since you won't be able to view it from the CLI again!");
-  });
+  // The API scopes by app id but people type names, so resolve first and fail before minting a key
+  // that would reach nothing.
+  const resolveAppIds = (): Promise<string[] | undefined> => {
+    if (!command.appNames || !command.appNames.length) return Q(<string[]>undefined);
+    return sdk.getApps().then((apps: App[]) =>
+      command.appNames.map((appName: string): string => {
+        const app = apps.find((candidate: App) => candidate.name === appName);
+        if (!app) {
+          throw new Error(`App "${appName}" was not found in your account, so the access key was not created.`);
+        }
+        if (!app.id) {
+          throw new Error(`The server did not return an id for app "${appName}". Limiting keys to apps needs a newer DeployPulse API.`);
+        }
+        return app.id;
+      })
+    );
+  };
+
+  return resolveAppIds().then((appIds: string[] | undefined) =>
+    sdk.addAccessKey(command.name, command.ttl, command.scopes, appIds).then((accessKey: AccessKey) => {
+      log(`Successfully created the "${command.name}" access key: ${accessKey.key}`);
+      if (command.scopes || appIds) {
+        log(`Scope: ${formatKeyScope(command.scopes, command.appNames)}`);
+      }
+      log("Make sure to save this key value somewhere safe, since you won't be able to view it from the CLI again!");
+    })
+  );
 }
 
 function accessKeyPatch(command: cli.IAccessKeyPatchCommand): Promise<void> {
@@ -1127,7 +1156,7 @@ function printAccessKeys(format: string, keys: AccessKey[]): void {
   if (format === "json") {
     printJson(keys);
   } else if (format === "table") {
-    printTable(["Name", "Created", "Expires"], (dataSource: any[]): void => {
+    printTable(["Name", "Created", "Expires", "Scope"], (dataSource: any[]): void => {
       const now = new Date().getTime();
 
       function isExpired(key: AccessKey): boolean {
@@ -1135,7 +1164,7 @@ function printAccessKeys(format: string, keys: AccessKey[]): void {
       }
 
       function keyToTableRow(key: AccessKey, dim: boolean): string[] {
-        const row: string[] = [key.name, key.createdTime ? formatDate(key.createdTime) : "", formatDate(key.expires)];
+        const row: string[] = [key.name, key.createdTime ? formatDate(key.createdTime) : "", formatDate(key.expires), formatKeyScope(key.scopes, key.appNames)];
 
         if (dim) {
           row.forEach((col: string, index: number) => {

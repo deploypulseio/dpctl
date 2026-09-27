@@ -63,7 +63,7 @@ export class SdkStub {
     });
   }
 
-  public addAccessKey(name: string, ttl: number): Q.Promise<codePush.AccessKey> {
+  public addAccessKey(name: string, ttl?: number, scopes?: string[], appIds?: string[]): Q.Promise<codePush.AccessKey> {
     return Q(<codePush.AccessKey>{
       key: "key123",
       createdTime: new Date().getTime(),
@@ -123,6 +123,7 @@ export class SdkStub {
   public getApps(): Q.Promise<codePush.App[]> {
     return Q([
       <codePush.App>{
+        id: "app-a-id",
         name: "a",
         collaborators: {
           "a@a.com": { permission: "Owner", isCurrentAccount: true },
@@ -130,6 +131,7 @@ export class SdkStub {
         deployments: ["Production", "Staging"],
       },
       <codePush.App>{
+        id: "app-b-id",
         name: "b",
         collaborators: {
           "a@a.com": { permission: "Owner", isCurrentAccount: true },
@@ -370,6 +372,44 @@ describe("CLI", () => {
     });
   });
 
+  it("accessKeyAdd resolves app names to ids and sends the requested scope", (done: Mocha.Done): void => {
+    var command: cli.IAccessKeyAddCommand = {
+      type: cli.CommandType.accessKeyAdd,
+      name: "CI key",
+      scopes: ["read"],
+      appNames: ["a"],
+    };
+
+    var addAccessKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addAccessKey");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(addAccessKey);
+      sinon.assert.calledWithExactly(addAccessKey, "CI key", undefined, ["read"], ["app-a-id"]);
+      sinon.assert.calledThrice(log);
+      assert.equal(log.args[1][0], "Scope: read only, a");
+      done();
+    });
+  });
+
+  it("accessKeyAdd does not create a key when an app name is not found", (done: Mocha.Done): void => {
+    var command: cli.IAccessKeyAddCommand = {
+      type: cli.CommandType.accessKeyAdd,
+      name: "CI key",
+      appNames: ["does-not-exist"],
+    };
+
+    var addAccessKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addAccessKey");
+
+    cmdexec.execute(command).then(
+      (): void => done(new Error("Should have rejected")),
+      (error: any): void => {
+        assert.ok(/was not found/.test(error.message));
+        sinon.assert.notCalled(addAccessKey);
+        done();
+      }
+    );
+  });
+
   it("accessKeyPatch updates access key with new name", (done: Mocha.Done): void => {
     var command: cli.IAccessKeyPatchCommand = {
       type: cli.CommandType.accessKeyPatch,
@@ -454,6 +494,20 @@ describe("CLI", () => {
     });
   });
 
+  it("accessKeyList shows what each key can reach", (done: Mocha.Done): void => {
+    var command: cli.IAccessKeyListCommand = {
+      type: cli.CommandType.accessKeyList,
+      format: "table",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var table: string = log.args[0][0];
+      assert.ok(/Scope/.test(table), table);
+      assert.ok(/full access, all apps/.test(table), table);
+      done();
+    });
+  });
+
   it("accessKeyRemove removes access key", (done: Mocha.Done): void => {
     var command: cli.IAccessKeyRemoveCommand = {
       type: cli.CommandType.accessKeyRemove,
@@ -524,6 +578,7 @@ describe("CLI", () => {
       var actual: string = log.args[0][0];
       var expected = [
         {
+          id: "app-a-id",
           name: "a",
           collaborators: {
             "a@a.com": {
@@ -534,6 +589,7 @@ describe("CLI", () => {
           deployments: ["Production", "Staging"],
         },
         {
+          id: "app-b-id",
           name: "b",
           collaborators: {
             "a@a.com": {

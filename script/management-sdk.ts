@@ -117,7 +117,7 @@ class AccountManager {
     });
   }
 
-  public addAccessKey(friendlyName: string, ttl?: number): Promise<AccessKey> {
+  public addAccessKey(friendlyName: string, ttl?: number, scopes?: string[], appIds?: string[]): Promise<AccessKey> {
     if (!friendlyName) {
       throw new Error("A name must be specified when adding an access key.");
     }
@@ -127,6 +127,9 @@ class AccountManager {
       friendlyName,
       ttl,
     };
+    // Absent means full access to all apps.
+    if (scopes && scopes.length) accessKeyRequest.scopes = scopes;
+    if (appIds && appIds.length) accessKeyRequest.appIds = appIds;
 
     return this.post(urlEncode(["/accessKeys/"]), JSON.stringify(accessKeyRequest), /*expectResponseBody=*/ true).then(
       (response: JsonResponse) => {
@@ -160,6 +163,8 @@ class AccountManager {
             createdTime: serverAccessKey.createdTime,
             expires: serverAccessKey.expires,
             name: serverAccessKey.friendlyName,
+            scopes: serverAccessKey.scopes,
+            appNames: serverAccessKey.appNames,
           });
       });
 

@@ -63,6 +63,24 @@ function accessKeyAdd(commandName: string, yargs: yargs.Argv): void {
       demand: false,
       description: "Duration string which specifies the amount of time that the access key should remain valid for (e.g 5m, 60d, 1y)",
       type: "string",
+    })
+    .example(
+      "access-key " + commandName + ' "MyApp CI" --app MyApp-iOS --app MyApp-Android',
+      "Creates a key that can only reach those two apps"
+    )
+    .example("access-key " + commandName + ' "Metrics bot" --scope read', "Creates a read-only key")
+    .option("scope", {
+      // No default: yargs validates `choices` against the default too, and omitting the field lets the
+      // server apply its own.
+      choices: ["full", "read"],
+      demand: false,
+      description: 'What the key may do: "full" (default) or "read" (GET requests only)',
+      type: "string",
+    })
+    .option("app", {
+      demand: false,
+      description: "Limit the key to this app. Repeat for several apps. Omit for all apps.",
+      type: "array",
     });
 
   addCommonConfiguration(yargs);
@@ -978,6 +996,14 @@ export function createCommand(): cli.ICommand {
               const ttlOption: string = argv["ttl"] as any;
               if (isDefined(ttlOption)) {
                 accessKeyAddCmd.ttl = parseDurationMilliseconds(ttlOption);
+              }
+              const scopeOption: string = argv["scope"] as any;
+              if (isDefined(scopeOption)) {
+                accessKeyAddCmd.scopes = [scopeOption];
+              }
+              const appOption: any = argv["app"];
+              if (isDefined(appOption)) {
+                accessKeyAddCmd.appNames = (Array.isArray(appOption) ? appOption : [appOption]).map(String);
               }
             }
             break;

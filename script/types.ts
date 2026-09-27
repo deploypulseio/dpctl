@@ -25,6 +25,8 @@ export interface AccessKey {
   expires: number;
   name: string;
   key?: string;
+  scopes?: string[];
+  appNames?: string[] | null;
 }
 
 export interface Session {

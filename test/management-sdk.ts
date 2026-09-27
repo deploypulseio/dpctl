@@ -404,6 +404,26 @@ describe("Management SDK", () => {
     );
   });
 
+  it("addAccessKey sends scopes and appIds when they are set", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ accessKey: { name: "k", friendlyName: "CI key", createdTime: 0, expires: 1 } }), 201);
+    manager.addAccessKey("CI key", undefined, ["read"], ["app-a-id"]).done(() => {
+      const body = typeof lastRequestBody === "string" ? JSON.parse(lastRequestBody) : lastRequestBody;
+      assert.deepStrictEqual(body.scopes, ["read"]);
+      assert.deepStrictEqual(body.appIds, ["app-a-id"]);
+      done();
+    }, rejectHandler);
+  });
+
+  it("addAccessKey leaves scopes and appIds out when they are not set", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ accessKey: { name: "k", friendlyName: "CI key", createdTime: 0, expires: 1 } }), 201);
+    manager.addAccessKey("CI key").done(() => {
+      const body = typeof lastRequestBody === "string" ? JSON.parse(lastRequestBody) : lastRequestBody;
+      assert.ok(!("scopes" in body), "an unscoped key must not pin itself to full");
+      assert.ok(!("appIds" in body), "an unscoped key must not pin itself to a list of apps");
+      done();
+    }, rejectHandler);
+  });
+
   it("getAutoRollbackConfig reads autoRollbackConfig, the key the API actually sends", (done: Mocha.Done) => {
     mockReturn(JSON.stringify({ autoRollbackConfig: { enabled: true, threshold: 25 } }), 200);
     manager.getAutoRollbackConfig("appName", "Staging").done((config: any) => {
@@ -421,11 +441,15 @@ function rejectHandler(val: any): void {
 }
 
 // Wrapper for superagent-mock that abstracts away information not needed for SDK tests
+let lastRequestBody: any;
+
 function mockReturn(bodyText: string, statusCode: number, header = {}): void {
+  lastRequestBody = undefined;
   require("superagent-mock")(request, [
     {
       pattern: "https://api.deploypulse.io/(.*)",
       fixtures: function (match: any, params: any): any {
+        lastRequestBody = params;
         var isOk = statusCode >= 200 && statusCode < 300;
         if (!isOk) {
           var err: any = new Error(bodyText);
