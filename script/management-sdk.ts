@@ -298,13 +298,13 @@ class AccountManager {
 
   public getAutoRollbackConfig(appName: string, deploymentName: string): Promise<any> {
     return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`])).then(
-      (res: JsonResponse) => res.body.autoRollback
+      (res: JsonResponse) => res.body.autoRollbackConfig
     );
   }
 
   public setAutoRollbackConfig(appName: string, deploymentName: string, config: { enabled: boolean; errorRateThreshold: number; minDevices: number }): Promise<any> {
     return this.put(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`]), JSON.stringify(config)).then(
-      (res: JsonResponse) => res.body.autoRollback
+      (res: JsonResponse) => res.body.autoRollbackConfig
     );
   }
 

@@ -357,6 +357,8 @@ yargs
         addCommonConfiguration(yargs);
       })
       .command("transfer", "Transfer the ownership of an app to another account", (yargs: yargs.Argv) => {
+        // Required, or the category check below rejects every invocation.
+        isValidCommand = true;
         yargs
           .usage(USAGE_PREFIX + " app transfer <appName> <email>")
           .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
