@@ -10,6 +10,7 @@ import * as path from "path";
 import * as codePush from "../script/types";
 import * as cli from "../script/types/cli";
 import * as cmdexec from "../script/command-executor";
+import { assertReleasePlatform, checkReleaseProjectKind, detectCodePushProjectKind } from "../script/ota-runtime";
 import * as hashUtils from "../script/hash-utils";
 import * as os from "os";
 import moment = require("moment");
@@ -120,6 +121,12 @@ export class SdkStub {
     ]);
   }
 
+  public getApp(appName: string): Q.Promise<codePush.App> {
+    // No platform: apps created before platforms existed are the common case, and the release guards
+    // deliberately do not fire for them.
+    return Q(<codePush.App>{ id: "app-a-id", name: appName, platform: null, deployments: ["Production", "Staging"] });
+  }
+
   public getApps(): Q.Promise<codePush.App[]> {
     return Q([
       <codePush.App>{
@@ -133,6 +140,7 @@ export class SdkStub {
       <codePush.App>{
         id: "app-b-id",
         name: "b",
+        platform: "expo-v1",
         collaborators: {
           "a@a.com": { permission: "Owner", isCurrentAccount: true },
         },
@@ -591,6 +599,7 @@ describe("CLI", () => {
         {
           id: "app-b-id",
           name: "b",
+          platform: "expo-v1",
           collaborators: {
             "a@a.com": {
               permission: "Owner",
@@ -604,6 +613,103 @@ describe("CLI", () => {
       assertJsonDescribesObject(actual, expected);
       done();
     });
+  });
+
+  it("appList table shows each app's platform, with legacy apps as React Native", (done: Mocha.Done): void => {
+    var command: cli.IAppListCommand = {
+      type: cli.CommandType.appList,
+      format: "table",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var output: string = log.args.map((args: any[]) => String(args[0])).join("\n");
+      var rowFor = (name: string): string => output.split("\n").find((line: string) => line.includes(` ${name} `)) || "";
+      assert.ok(output.includes("Platform"), output);
+      assert.ok(rowFor("a").includes("React Native"), output);
+      assert.ok(!rowFor("a").includes("Expo"), output);
+      assert.ok(rowFor("b").includes("Expo Updates v1"), output);
+      done();
+    });
+  });
+
+  it("appAdd passes platform to SDK when provided", (done: Mocha.Done): void => {
+    var command: cli.IAppAddCommand = {
+      type: cli.CommandType.appAdd,
+      appName: "a",
+      os: "",
+      platform: "expo-cng-ios",
+    };
+
+    var addApp: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addApp");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(addApp);
+      sinon.assert.calledWith(addApp, "a", "expo-cng-ios");
+      done();
+    });
+  });
+
+  it("appAdd works without platform for backwards compatibility", (done: Mocha.Done): void => {
+    var command: cli.IAppAddCommand = {
+      type: cli.CommandType.appAdd,
+      appName: "a",
+      os: "",
+      platform: null,
+    };
+
+    var addApp: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addApp");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(addApp);
+      sinon.assert.calledWith(addApp, "a", null);
+      done();
+    });
+  });
+
+  it("refuses a release-react platform that isn't the app's", (): void => {
+    const run = (appPlatform: string | null, releasePlatform: string) => () =>
+      assertReleasePlatform({ appName: "MyApp-iOS", deploymentName: "Production", appPlatform, releasePlatform });
+
+    assert.throws(run("ios", "android"), /can't take a bundle built for android[\s\S]*release-react MyApp-iOS ios -d Production/);
+    assert.throws(run("expo-cng-ios", "android"), /Expo CNG \(iOS\)/);
+    assert.throws(run("expo-cng-android", "IOS"), /release-react MyApp-iOS android/);
+    assert.doesNotThrow(run("ios", "ios"));
+    assert.doesNotThrow(run("expo-cng-android", "Android"));
+    assert.doesNotThrow(run(null, "android"), "apps created before platforms existed are not checked");
+  });
+
+  it("tells an Expo CNG project from a bare one by the config plugin, not the expo package", (): void => {
+    const dirs: string[] = [];
+    const project = (dependencies: { [name: string]: string }, appJson?: object): string => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-test-kind-"));
+      dirs.push(dir);
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", dependencies }));
+      if (appJson) fs.writeFileSync(path.join(dir, "app.json"), JSON.stringify(appJson));
+      return dir;
+    };
+    const cngConfig = { expo: { plugins: [["@code-push-next/react-native-code-push/expo", { ios: {} }]] } };
+    const cng = project({ expo: "~53.0.0", "react-native": "0.79.3" }, cngConfig);
+    // The bare package name is the plugin form the docs use now that the SDK ships an app.plugin.js.
+    const cngBareName = project({ expo: "~53.0.0", "react-native": "0.79.3" },
+      { expo: { plugins: [["@deploypulseio/react-native-code-push", { ios: {} }]] } });
+    const bare = project({ "react-native": "0.79.3" });
+    const bareWithExpoModules = project({ expo: "~53.0.0", "react-native": "0.79.3" }); // no config plugin
+
+    assert.equal(detectCodePushProjectKind(cng), "expo-cng");
+    assert.equal(detectCodePushProjectKind(cngBareName), "expo-cng", "the bare plugin name counts too");
+    assert.equal(detectCodePushProjectKind(bare), "bare");
+    assert.equal(detectCodePushProjectKind(bareWithExpoModules), null, "the expo package alone proves nothing");
+
+    // An Expo CNG app from a project with no Expo at all is the wrong folder: blocked.
+    assert.throws(() => checkReleaseProjectKind({ appName: "MyApp-iOS", appPlatform: "expo-cng-ios", projectRoot: bare }), /doesn't use Expo/);
+    // A bare app from an Expo CNG project still works (platform can't be changed after creation): warned only.
+    const warning = checkReleaseProjectKind({ appName: "MyApp-iOS", appPlatform: "ios", projectRoot: cng });
+    assert.ok(warning && warning.includes("The release will still work"), String(warning));
+    // Matching kinds, or a project it can't classify, say nothing.
+    assert.strictEqual(checkReleaseProjectKind({ appName: "A", appPlatform: "expo-cng-ios", projectRoot: cng }), null);
+    assert.strictEqual(checkReleaseProjectKind({ appName: "A", appPlatform: "ios", projectRoot: bare }), null);
+    assert.strictEqual(checkReleaseProjectKind({ appName: "A", appPlatform: "expo-cng-ios", projectRoot: bareWithExpoModules }), null);
+    dirs.forEach((dir: string) => fs.rmSync(dir, { recursive: true, force: true }));
   });
 
   it("appRemove removes app", (done: Mocha.Done): void => {
@@ -1344,6 +1450,66 @@ describe("CLI", () => {
         assert.equal(err.message, 'Entry file "doesntexist.js" does not exist.');
         sinon.assert.notCalled(release);
         sinon.assert.notCalled(spawn);
+        done();
+      })
+      .done();
+  });
+
+  it("release-react refuses a bundle built for a platform that isn't the app's", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec.sdk, "getApp").callsFake(() => Q(<codePush.App>{ id: "app-a-id", name: "a", platform: "ios" }));
+
+    var command: cli.IReleaseReactCommand = {
+      type: cli.CommandType.releaseReact,
+      appName: "a",
+      appStoreVersion: null,
+      deploymentName: "Staging",
+      description: "Wrong platform",
+      mandatory: false,
+      rollout: null,
+      platform: "android",
+    };
+
+    ensureInTestAppDirectory();
+
+    var release: sinon.SinonSpy = sandbox.spy(cmdexec, "release");
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(/can't take a bundle built for android/.test(err.message), err.message);
+        sinon.assert.notCalled(release);
+        sinon.assert.notCalled(spawn);
+        done();
+      })
+      .done();
+  });
+
+  it("release-react refuses an Expo CNG app released from a project with no Expo", (done: Mocha.Done): void => {
+    // The test app is a bare React Native project, so this is the wrong folder for a CNG app.
+    sandbox.stub(cmdexec.sdk, "getApp").callsFake(() => Q(<codePush.App>{ id: "app-a-id", name: "a", platform: "expo-cng-ios" }));
+
+    var command: cli.IReleaseReactCommand = {
+      type: cli.CommandType.releaseReact,
+      appName: "a",
+      appStoreVersion: null,
+      deploymentName: "Staging",
+      description: "Wrong folder",
+      mandatory: false,
+      rollout: null,
+      platform: "ios",
+    };
+
+    ensureInTestAppDirectory();
+
+    var release: sinon.SinonSpy = sandbox.spy(cmdexec, "release");
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(/doesn't use Expo/.test(err.message), err.message);
+        sinon.assert.notCalled(release);
         done();
       })
       .done();

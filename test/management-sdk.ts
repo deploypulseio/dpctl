@@ -123,12 +123,15 @@ describe("Management SDK", () => {
     );
   });
 
-  it("addApp handles successful response", (done: Mocha.Done) => {
-    mockReturn(JSON.stringify({ success: true }), 201, {
+  it("addApp resolves with the app the server created", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ app: { id: "server-generated-id", name: "appName", platform: "ios" } }), 201, {
       location: "/appName",
     });
-    manager.addApp("appName").done((obj) => {
-      assert.ok(obj);
+    manager.addApp("appName", "ios").done((app: any) => {
+      assert.equal(app.name, "appName");
+      assert.equal(app.platform, "ios");
+      // Only the server's copy carries generated fields, so this fails if the posted object is resolved.
+      assert.equal(app.id, "server-generated-id");
       done();
     }, rejectHandler);
   });
