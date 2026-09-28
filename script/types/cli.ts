@@ -30,6 +30,9 @@ export enum CommandType {
   deploymentRename,
   login,
   logout,
+  orgClear,
+  orgList,
+  orgUse,
   patch,
   promote,
   release,
@@ -42,6 +45,7 @@ export enum CommandType {
 
 export interface ICommand {
   type: CommandType;
+  org?: string;
 }
 
 export interface IAccessKeyAddCommand extends ICommand {
@@ -167,6 +171,14 @@ export interface IDeploymentRenameCommand extends ICommand {
 
 export interface ILinkCommand extends ICommand {
   serverUrl?: string;
+}
+
+export interface IOrgListCommand extends ICommand {
+  format: string;
+}
+
+export interface IOrgUseCommand extends ICommand {
+  organization: string;
 }
 
 export interface ILoginCommand extends ICommand {

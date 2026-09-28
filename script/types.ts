@@ -20,6 +20,14 @@ export interface CodePushError {
   statusCode: number;
 }
 
+export interface Org {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  isOwner: boolean;
+}
+
 export interface AccessKey {
   createdTime: number;
   expires: number;

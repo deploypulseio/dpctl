@@ -407,6 +407,19 @@ describe("Management SDK", () => {
     );
   });
 
+  it("sends x-org-id once an organization is set, and not before", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ apps: [] }), 200);
+    manager.getApps().done(() => {
+      assert.ok(!lastRequestHeaders["x-org-id"], "personal account requests must not carry the header");
+
+      manager.setOrgId("org-id-acme");
+      manager.getApps().done(() => {
+        assert.strictEqual(lastRequestHeaders["x-org-id"], "org-id-acme");
+        done();
+      }, rejectHandler);
+    }, rejectHandler);
+  });
+
   it("addAccessKey sends scopes and appIds when they are set", (done: Mocha.Done) => {
     mockReturn(JSON.stringify({ accessKey: { name: "k", friendlyName: "CI key", createdTime: 0, expires: 1 } }), 201);
     manager.addAccessKey("CI key", undefined, ["read"], ["app-a-id"]).done(() => {
@@ -445,14 +458,16 @@ function rejectHandler(val: any): void {
 
 // Wrapper for superagent-mock that abstracts away information not needed for SDK tests
 let lastRequestBody: any;
+let lastRequestHeaders: any;
 
 function mockReturn(bodyText: string, statusCode: number, header = {}): void {
   lastRequestBody = undefined;
   require("superagent-mock")(request, [
     {
       pattern: "https://api.deploypulse.io/(.*)",
-      fixtures: function (match: any, params: any): any {
+      fixtures: function (match: any, params: any, headers: any): any {
         lastRequestBody = params;
+        lastRequestHeaders = headers || {};
         var isOk = statusCode >= 200 && statusCode < 300;
         if (!isOk) {
           var err: any = new Error(bodyText);

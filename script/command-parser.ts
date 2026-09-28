@@ -145,6 +145,12 @@ function addCommonConfiguration(yargs: yargs.Argv): void {
   yargs
     .wrap(/*columnLimit*/ null)
     .string("_") // Interpret non-hyphenated arguments as strings (e.g. an app version of '1.10').
+    // Declared here so every command accepts it; strictOptions would reject it otherwise.
+    .option("org", {
+      demand: false,
+      description: "Organization to run this command against (slug, name or id). Overrides 'dpctl org use'",
+      type: "string",
+    })
     // strictOptions, NOT strict: unknown flags become errors instead of being silently dropped, which is
     // what let `--deployment Production` ship releases to Staging. Full .strict() also validates
     // positionals, and this parser declares only positional counts, so every command would fail with
@@ -161,6 +167,22 @@ function addCommonConfiguration(yargs: yargs.Argv): void {
       }
       showHelp();
     });
+}
+
+function orgList(commandName: string, yargs: yargs.Argv): void {
+  isValidCommand = true;
+  yargs
+    .usage(USAGE_PREFIX + " org " + commandName + " [options]")
+    .demand(/*count*/ 0, /*max*/ 0)
+    .example("org " + commandName, "List your organizations in tabular format")
+    .example("org " + commandName + " --format json", "List your organizations in JSON format")
+    .option("format", {
+      default: "table",
+      demand: false,
+      description: 'Output format to display your organizations in ("json" or "table")',
+      type: "string",
+    });
+  addCommonConfiguration(yargs);
 }
 
 function appList(commandName: string, yargs: yargs.Argv): void {
@@ -555,6 +577,31 @@ yargs
       .usage(USAGE_PREFIX + " logout")
       .demand(/*count*/ 0, /*max*/ 0)
       .example("logout", "Logs out and ends your current session");
+    addCommonConfiguration(yargs);
+  })
+  .command("org", "View and switch the organization your commands run against", (yargs: yargs.Argv) => {
+    isValidCommandCategory = true;
+    yargs
+      .usage(USAGE_PREFIX + " org <command>")
+      .demand(/*count*/ 2, /*max*/ 3)
+      .command("list", "List the organizations you belong to", (yargs: yargs.Argv) => orgList("list", yargs))
+      .command("ls", "List the organizations you belong to", (yargs: yargs.Argv) => orgList("ls", yargs))
+      .command("use", "Run later commands against an organization", (yargs: yargs.Argv): void => {
+        isValidCommand = true;
+        yargs
+          .usage(USAGE_PREFIX + " org use <organization>")
+          .demand(/*count*/ 1, /*max*/ 1) // The organization; the category counts the words before it.
+          .example("org use acme", "Run later commands against the acme organization")
+          .example("org use " + chalk.cyan("<id>"), "The same, by organization id");
+        addCommonConfiguration(yargs);
+      })
+      .command("clear", "Go back to running commands against your personal account", (yargs: yargs.Argv): void => {
+        isValidCommand = true;
+        yargs.usage(USAGE_PREFIX + " org clear").demand(/*count*/ 0, /*max*/ 0);
+        addCommonConfiguration(yargs);
+      })
+      .check((argv: any, aliases: { [aliases: string]: string }): any => isValidCommand);
+
     addCommonConfiguration(yargs);
   })
   .command("patch", "Update the metadata for an existing release", (yargs: yargs.Argv) => {
@@ -1292,6 +1339,27 @@ export function createCommand(): cli.ICommand {
         cmd = { type: cli.CommandType.logout };
         break;
 
+      case "org":
+        switch (arg1) {
+          case "list":
+          case "ls":
+            cmd = { type: cli.CommandType.orgList };
+            (<cli.IOrgListCommand>cmd).format = argv["format"] as any;
+            break;
+
+          case "use":
+            if (arg2) {
+              cmd = { type: cli.CommandType.orgUse };
+              (<cli.IOrgUseCommand>cmd).organization = arg2;
+            }
+            break;
+
+          case "clear":
+            cmd = { type: cli.CommandType.orgClear };
+            break;
+        }
+        break;
+
       case "patch":
         if (arg1 && arg2) {
           cmd = { type: cli.CommandType.patch };
@@ -1411,6 +1479,11 @@ export function createCommand(): cli.ICommand {
       case "whoami":
         cmd = { type: cli.CommandType.whoami };
         break;
+    }
+
+    // --org applies to every command, so it is read once here rather than in each case above.
+    if (cmd && argv["org"]) {
+      cmd.org = String(argv["org"]);
     }
 
     return cmd;

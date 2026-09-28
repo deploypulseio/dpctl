@@ -30,6 +30,7 @@ import {
   App,
   CodePushError,
   CollaboratorMap,
+  Org,
   CollaboratorProperties,
   Deployment,
   DeploymentMetrics,
@@ -61,6 +62,14 @@ interface ILegacyLoginConnectionInfo {
 interface ILoginConnectionInfo {
   accessKey: string;
   preserveAccessKeyOnLogout?: boolean;
+  /** Saved by `dpctl org use`. Always the resolved id, so later commands need no lookup. */
+  orgId?: string;
+  orgSlug?: string;
+}
+
+interface OrgContext {
+  id: string;
+  slug: string;
 }
 
 export interface UpdateMetricsWithTotalActive extends UpdateMetrics {
@@ -505,7 +514,7 @@ function deploymentHistory(command: cli.IDeploymentHistoryCommand): Promise<void
   });
 }
 
-function deserializeConnectionInfo(): ILoginConnectionInfo {
+export const deserializeConnectionInfo = (): ILoginConnectionInfo => {
   try {
     const savedConnection: string = fs.readFileSync(configFilePath, {
       encoding: "utf8",
@@ -525,13 +534,17 @@ function deserializeConnectionInfo(): ILoginConnectionInfo {
   } catch (ex) {
     return;
   }
-}
+};
 
 export function execute(command: cli.ICommand) {
   connectionInfo = deserializeConnectionInfo();
 
   return Q(<void>null).then(() => {
     switch (command.type) {
+      // Only touches the session file on this machine.
+      case cli.CommandType.orgClear:
+        break;
+
       // Must not be logged in
       case cli.CommandType.login:
         if (connectionInfo) {
@@ -554,7 +567,9 @@ export function execute(command: cli.ICommand) {
         sdk = getSdk(accessKey, CLI_HEADERS);
         break;
     }
-
+  })
+  .then(() => applyOrgContext(command))
+  .then(() => {
     switch (command.type) {
       case cli.CommandType.accessKeyAdd:
         return accessKeyAdd(<cli.IAccessKeyAddCommand>command);
@@ -631,6 +646,15 @@ export function execute(command: cli.ICommand) {
       case cli.CommandType.logout:
         return logout(command);
 
+      case cli.CommandType.orgList:
+        return orgList(<cli.IOrgListCommand>command);
+
+      case cli.CommandType.orgUse:
+        return orgUse(<cli.IOrgUseCommand>command);
+
+      case cli.CommandType.orgClear:
+        return orgClear(command);
+
       case cli.CommandType.patch:
         return patch(<cli.IPatchCommand>command);
 
@@ -694,19 +718,20 @@ function login(command: cli.ILoginCommand): Promise<void> {
   // Check if one of the flags were provided.
   if (command.accessKey) {
     sdk = getSdk(command.accessKey, CLI_HEADERS);
-    return sdk.isAuthenticated().then((isAuthenticated: boolean): void => {
-      if (isAuthenticated) {
-        serializeConnectionInfo(command.accessKey, /*preserveAccessKeyOnLogout*/ true);
-      } else {
+    return sdk.isAuthenticated().then((isAuthenticated: boolean): Promise<void> => {
+      if (!isAuthenticated) {
         throw new Error("Invalid access key.");
       }
+      return chooseOrgContext(command).then((org: OrgContext): void => {
+        serializeConnectionInfo(command.accessKey, /*preserveAccessKeyOnLogout*/ true, org);
+      });
     });
   } else {
-    return loginWithExternalAuthentication("login");
+    return loginWithExternalAuthentication("login", command);
   }
 }
 
-function loginWithExternalAuthentication(action: string): Promise<void> {
+function loginWithExternalAuthentication(action: string, command?: cli.ICommand): Promise<void> {
   initiateExternalAuthenticationAsync(action);
   log(""); // Insert newline
 
@@ -718,12 +743,13 @@ function loginWithExternalAuthentication(action: string): Promise<void> {
 
     sdk = getSdk(accessKey, CLI_HEADERS);
 
-    return sdk.isAuthenticated().then((isAuthenticated: boolean): void => {
-      if (isAuthenticated) {
-        serializeConnectionInfo(accessKey, /*preserveAccessKeyOnLogout*/ false);
-      } else {
+    return sdk.isAuthenticated().then((isAuthenticated: boolean): Promise<void> => {
+      if (!isAuthenticated) {
         throw new Error("Invalid access key.");
       }
+      return chooseOrgContext(command).then((org: OrgContext): void => {
+        serializeConnectionInfo(accessKey, /*preserveAccessKeyOnLogout*/ false, org);
+      });
     });
   });
 }
@@ -1547,14 +1573,181 @@ export const runReactNativeBundleCommand = (
   });
 };
 
-function serializeConnectionInfo(accessKey: string, preserveAccessKeyOnLogout: boolean): void {
+
+/**
+ * Ask, once at login, which organization this machine's commands run against.
+ *
+ * Single-select: x-org-id carries one organization, so a command runs against the personal account or
+ * exactly one org. It asks nothing when --org already answered, when the account has no organizations,
+ * or when stdin is not a terminal, which is the CI case. A failure here never fails the login: the
+ * access key has already been minted by this point.
+ */
+// `export const`, like writeConnectionInfo: TypeScript routes calls to an exported const through the
+// exports object, which is what lets a test stub promptForLine without a terminal.
+export const chooseOrgContext = (command?: cli.ICommand): Promise<OrgContext | null> => {
+  if (command?.org) {
+    return resolveOrg(command.org).then((org: Org): OrgContext => ({ id: org.id, slug: org.slug }));
+  }
+
+  if (!process.stdin.isTTY) return Q(<OrgContext>null);
+
+  return sdk
+    .getOrgs()
+    .then((orgs: Org[]): Promise<OrgContext> => {
+      if (!orgs.length) return Q(<OrgContext>null);
+
+      log("");
+      log("You belong to the following organizations:");
+      orgs.forEach((org: Org, index: number) => log(`  ${index + 1}) ${org.name} (${org.slug})`));
+      log("  0) Personal account");
+
+      return exports.promptForLine(`Which should commands run against? [0-${orgs.length}, default 0]:`).then(
+        (answer: string): OrgContext => {
+          const choice: number = parseInt(answer, 10);
+          // Anything else means personal, which is the safe answer: it touches only your own apps.
+          if (!(choice >= 1 && choice <= orgs.length)) return null;
+          return { id: orgs[choice - 1].id, slug: orgs[choice - 1].slug };
+        }
+      );
+    })
+    .catch((): OrgContext => null);
+};
+
+export const promptForLine = (message: string): Promise<string> => {
+  return Promise<string>((resolve): void => {
+    prompt.message = "";
+    prompt.delimiter = "";
+    prompt.start();
+    prompt.get({ properties: { response: { description: chalk.cyan(message) } } }, (err: any, result: any): void => {
+      resolve(err || !result ? "" : String(result.response ?? "").trim());
+    });
+  });
+};
+
+// --org, then DEPLOYPULSE_ORG_ID, then `dpctl org use`. The variable beats the session file so CI can
+// switch context without rewriting it. `resolve` marks the one that costs a lookup: --org takes a slug
+// or a name, the other two are already ids.
+function requestedOrg(command: cli.ICommand): { value: string; resolve: boolean } | null {
+  if (command.org) return { value: command.org, resolve: true };
+  if (process.env.DEPLOYPULSE_ORG_ID) return { value: process.env.DEPLOYPULSE_ORG_ID, resolve: false };
+  if (connectionInfo?.orgId) return { value: connectionInfo.orgId, resolve: false };
+  return null;
+}
+
+function resolveOrg(requested: string): Promise<Org> {
+  return sdk.getOrgs().then((orgs: Org[]): Org => {
+    const needle = requested.toLowerCase();
+    // Tiered, most specific first, because slugs are unique server-side but NAMES ARE NOT: two orgs
+    // called "Acme" get slugs "acme" and "acme-2", and one find() over id|slug|name could match the
+    // wrong one by name and persist it.
+    const byId = orgs.filter((org: Org) => org.id === requested);
+    const bySlug = orgs.filter((org: Org) => (org.slug ?? "").toLowerCase() === needle);
+    const byName = orgs.filter((org: Org) => (org.name ?? "").toLowerCase() === needle);
+    const tier = byId.length ? byId : bySlug.length ? bySlug : byName;
+    if (tier.length > 1) {
+      throw new Error(
+        `"${requested}" matches ${tier.length} organizations (${tier.map((org: Org) => org.slug).join(", ")}). Use the slug or the id.`
+      );
+    }
+    const match = tier[0];
+    if (!match) {
+      const known = orgs.length ? orgs.map((org: Org) => org.slug).join(", ") : "none";
+      throw new Error(`No organization "${requested}". Organizations you belong to: ${known}.`);
+    }
+    return match;
+  });
+}
+
+// Runs after authentication and before the command, so every request it makes carries the header.
+function applyOrgContext(command: cli.ICommand): Promise<void> {
+  const requested = requestedOrg(command);
+  if (!requested || !sdk || command.type === cli.CommandType.orgList || command.type === cli.CommandType.orgUse) {
+    return Q(<void>null);
+  }
+  if (!requested.resolve) {
+    sdk.setOrgId(requested.value);
+    return Q(<void>null);
+  }
+  return resolveOrg(requested.value).then((org: Org): void => {
+    sdk.setOrgId(org.id);
+  });
+}
+
+function orgList(command: cli.IOrgListCommand): Promise<void> {
+  throwForInvalidOutputFormat(command.format);
+
+  return sdk.getOrgs().then((orgs: Org[]): void => {
+    const activeId = requestedOrg(command)?.value ?? null;
+    if (command.format === "json") {
+      printJson(orgs.map((org: Org) => ({ ...org, active: org.id === activeId || org.slug === activeId })));
+      return;
+    }
+    printTable(["", "Slug", "Name", "Role"], (dataSource: any[]): void => {
+      orgs.forEach((org: Org) => {
+        const active = org.id === activeId || org.slug === activeId;
+        dataSource.push([active ? chalk.green("*") : "", org.slug, org.name, org.role]);
+      });
+    });
+    if (!orgs.length) {
+      log("You do not belong to any organizations.");
+    }
+  });
+}
+
+/** The env var beats the session file, so a change to the file is a no-op while it is set. */
+function warnIfOrgEnvOverrides(): void {
+  if (process.env.DEPLOYPULSE_ORG_ID) {
+    log(
+      chalk.yellow(
+        `[Warning] DEPLOYPULSE_ORG_ID is set (${process.env.DEPLOYPULSE_ORG_ID}) and takes precedence, so commands still run against that organization. Unset it for this change to take effect.`
+      )
+    );
+  }
+}
+
+function orgUse(command: cli.IOrgUseCommand): Promise<void> {
+  if (!connectionInfo) {
+    throw new Error(
+      "There is no session file to save the organization to. Run 'dpctl login' first, or set DEPLOYPULSE_ORG_ID if you authenticate with an access key."
+    );
+  }
+  return resolveOrg(command.organization).then((org: Org): void => {
+    writeConnectionInfo({ ...connectionInfo, orgId: org.id, orgSlug: org.slug });
+    log(`Commands now run against ${chalk.cyan(org.name)} (${org.slug}). Run ${chalk.cyan("dpctl org clear")} to go back to your personal account.`);
+    warnIfOrgEnvOverrides();
+  });
+}
+
+function orgClear(command: cli.ICommand): Promise<void> {
+  if (!connectionInfo?.orgId && !connectionInfo?.orgSlug) {
+    log("Commands already run against your personal account.");
+    return Q(<void>null);
+  }
+  const { orgId, orgSlug, ...rest } = connectionInfo;
+  writeConnectionInfo(rest);
+  log(
+    orgSlug
+      ? `Commands now run against your personal account. ${chalk.cyan("dpctl org use " + orgSlug)} switches back.`
+      : "Commands now run against your personal account."
+  );
+  warnIfOrgEnvOverrides();
+  return Q(<void>null);
+}
+
+// `export const`, not `export function`: TypeScript compiles calls to an exported const through the
+// exports object, which is what lets the tests stub this and keep the real session file untouched.
+export const writeConnectionInfo = (connectionInfo: ILoginConnectionInfo): void => {
+  fs.writeFileSync(configFilePath, JSON.stringify(connectionInfo), { encoding: "utf8" });
+};
+
+function serializeConnectionInfo(accessKey: string, preserveAccessKeyOnLogout: boolean, org?: OrgContext): void {
   const connectionInfo: ILoginConnectionInfo = {
     accessKey: accessKey,
     preserveAccessKeyOnLogout: preserveAccessKeyOnLogout,
+    ...(org?.id ? { orgId: org.id, orgSlug: org.slug } : {}),
   };
 
-  const json: string = JSON.stringify(connectionInfo);
-  fs.writeFileSync(configFilePath, json, { encoding: "utf8" });
+  writeConnectionInfo(connectionInfo);
 
   log(
     `\r\nSuccessfully logged-in. Your session file was written to ${chalk.cyan(configFilePath)}. You can run the ${chalk.cyan(
