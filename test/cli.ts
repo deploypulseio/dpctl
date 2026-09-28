@@ -121,6 +121,19 @@ export class SdkStub {
     ]);
   }
 
+  public setOrgId(orgId: string | null): void {
+    this.orgId = orgId;
+  }
+
+  public orgId: string | null = null;
+
+  public getOrgs(): Q.Promise<any[]> {
+    return Q([
+      { id: "org-id-acme", slug: "acme", name: "Acme Inc", role: "admin", isOwner: true },
+      { id: "org-id-other", slug: "other-co", name: "Other Co", role: "viewer", isOwner: false },
+    ]);
+  }
+
   public getApp(appName: string): Q.Promise<codePush.App> {
     // No platform: apps created before platforms existed are the common case, and the release guards
     // deliberately do not fire for them.
@@ -301,6 +314,7 @@ describe("CLI", () => {
   var sandbox: sinon.SinonSandbox;
   var spawn: sinon.SinonStub;
   var wasConfirmed = true;
+  var writtenConnectionInfo: any = null;
   const INVALID_RELEASE_FILE_ERROR_MESSAGE: string =
     "It is unnecessary to package releases in a .zip or binary file. Please specify the direct path to the update content's directory (e.g. /platforms/ios/www) or file (e.g. main.jsbundle).";
 
@@ -316,6 +330,13 @@ describe("CLI", () => {
     );
 
     (cmdexec as any).sdk = new SdkStub();
+
+    // Nothing in this suite may touch the real session file. Stubbed for every test, not just the ones
+    // that mean to write, because a test that writes it clobbers the developer's own session.
+    writtenConnectionInfo = null;
+    sandbox.stub(cmdexec, "writeConnectionInfo").callsFake((info: any) => {
+      writtenConnectionInfo = info;
+    });
 
     sandbox.stub(cmdexec, "createEmptyTempReleaseFolder").callsFake(() => Q.Promise<void>((resolve) => resolve()));
     log = sandbox.stub(cmdexec, "log").callsFake(() => {});
@@ -1942,6 +1963,217 @@ describe("CLI", () => {
         done();
       })
       .done();
+  });
+
+  it("orgList marks the organization commands currently run against", (done: Mocha.Done): void => {
+    var command: cli.IOrgListCommand = {
+      type: cli.CommandType.orgList,
+      format: "json",
+      org: "acme",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var actual: any[] = JSON.parse(log.args[0][0]);
+      assert.equal(actual.length, 2);
+      assert.strictEqual(actual[0].active, true, "acme is the active organization");
+      assert.strictEqual(actual[1].active, false);
+      done();
+    });
+  });
+
+  it("orgList rejects an output format it cannot produce", (done: Mocha.Done): void => {
+    var command: cli.IOrgListCommand = { type: cli.CommandType.orgList, format: "xml" };
+
+    cmdexec.execute(command).done(
+      () => done(new Error("an unsupported format should be rejected")),
+      () => done()
+    );
+  });
+
+  it("orgUse resolves a slug to the organization's id", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>{ accessKey: "key" });
+
+    var command: cli.IOrgUseCommand = { type: cli.CommandType.orgUse, organization: "acme" };
+
+    cmdexec.execute(command).done((): void => {
+      // The id is saved, not the slug, so later commands send the header with no extra lookup.
+      assert.strictEqual(writtenConnectionInfo.orgId, "org-id-acme");
+      assert.strictEqual(writtenConnectionInfo.orgSlug, "acme");
+      assert.strictEqual(writtenConnectionInfo.accessKey, "key", "the session is preserved, not replaced");
+      done();
+    });
+  });
+
+  it("orgUse refuses an organization the account does not belong to, and names the ones it does", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>{ accessKey: "key" });
+    var command: cli.IOrgUseCommand = { type: cli.CommandType.orgUse, organization: "not-mine" };
+
+    cmdexec.execute(command).done(
+      () => done(new Error("an unknown organization should be rejected")),
+      (error: any) => {
+        assert.ok(error.message.indexOf("acme") >= 0, error.message);
+        done();
+      }
+    );
+  });
+
+  it("--org puts the command in that organization's context", (done: Mocha.Done): void => {
+    var command: cli.IAppListCommand = { type: cli.CommandType.appList, format: "json", org: "acme" };
+
+    cmdexec.execute(command).done((): void => {
+      assert.strictEqual((cmdexec.sdk as any).orgId, "org-id-acme");
+      done();
+    });
+  });
+
+  it("runs against the personal account when nothing asks for an organization", (done: Mocha.Done): void => {
+    var command: cli.IAppListCommand = { type: cli.CommandType.appList, format: "json" };
+
+    cmdexec.execute(command).done((): void => {
+      assert.strictEqual((cmdexec.sdk as any).orgId, null);
+      done();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The organization picker shown once, at login. Single-select on purpose: x-org-id carries ONE
+  // organization, so a command runs against the personal account or against exactly one org.
+  // ---------------------------------------------------------------------------
+
+  function withTty<T>(isTty: boolean, body: () => T): T {
+    const descriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: isTty, configurable: true });
+    try {
+      return body();
+    } finally {
+      if (descriptor) Object.defineProperty(process.stdin, "isTTY", descriptor);
+      else delete (process.stdin as any).isTTY;
+    }
+  }
+
+  it("login asks nothing when stdin is not a terminal", (done: Mocha.Done): void => {
+    // A CI job piping `dpctl login --accessKey` must never block on a prompt.
+    const promptForLine = sandbox.stub(cmdexec, "promptForLine").callsFake(() => Q("1"));
+
+    withTty(false, () => {
+      cmdexec.chooseOrgContext().done((org: any): void => {
+        sinon.assert.notCalled(promptForLine);
+        assert.strictEqual(org, null, "no prompt means the personal account");
+        done();
+      }, done);
+    });
+  });
+
+  it("login puts you in the organization you pick", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "promptForLine").callsFake(() => Q("1"));
+
+    withTty(true, () => {
+      cmdexec.chooseOrgContext().done((org: any): void => {
+        assert.strictEqual(org.id, "org-id-acme");
+        assert.strictEqual(org.slug, "acme");
+        done();
+      }, done);
+    });
+  });
+
+  it("login reads 0 as the personal account", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "promptForLine").callsFake(() => Q("0"));
+
+    withTty(true, () => {
+      cmdexec.chooseOrgContext().done((org: any): void => {
+        assert.strictEqual(org, null);
+        done();
+      }, done);
+    });
+  });
+
+  it("login treats an answer that is not on the list as the personal account", (done: Mocha.Done): void => {
+    // Anything unrecognised means personal, which is the safe answer: it touches only your own apps.
+    sandbox.stub(cmdexec, "promptForLine").callsFake(() => Q("99"));
+
+    withTty(true, () => {
+      cmdexec.chooseOrgContext().done((org: any): void => {
+        assert.strictEqual(org, null);
+        done();
+      }, done);
+    });
+  });
+
+  it("login skips the picker when --org already answered it", (done: Mocha.Done): void => {
+    const promptForLine = sandbox.stub(cmdexec, "promptForLine").callsFake(() => Q("1"));
+
+    withTty(true, () => {
+      cmdexec.chooseOrgContext(<any>{ type: cli.CommandType.login, org: "other-co" }).done((org: any): void => {
+        sinon.assert.notCalled(promptForLine);
+        assert.strictEqual(org.id, "org-id-other");
+        done();
+      }, done);
+    });
+  });
+
+  it("a failure listing organizations does not fail the login", (done: Mocha.Done): void => {
+    // The access key has already been minted by this point, so erroring out would leave the user
+    // authenticated with nothing written to disk.
+    sandbox.stub(cmdexec.sdk, "getOrgs").callsFake(() => Q.reject(new Error("boom")));
+
+    withTty(true, () => {
+      cmdexec.chooseOrgContext().done((org: any): void => {
+        assert.strictEqual(org, null);
+        done();
+      }, done);
+    });
+  });
+
+  it("DEPLOYPULSE_ORG_ID beats the organization saved in the session file", (done: Mocha.Done): void => {
+    // CI must be able to switch context without rewriting the file the developer logged in with.
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>{ accessKey: "key", orgId: "org-id-other" });
+    process.env.DEPLOYPULSE_ORG_ID = "org-id-acme";
+
+    var command: cli.IAppListCommand = { type: cli.CommandType.appList, format: "json" };
+
+    cmdexec.execute(command).done((): void => {
+      delete process.env.DEPLOYPULSE_ORG_ID;
+      assert.strictEqual((cmdexec.sdk as any).orgId, "org-id-acme");
+      done();
+    }, (error: any) => {
+      delete process.env.DEPLOYPULSE_ORG_ID;
+      done(error);
+    });
+  });
+
+  it("orgUse prefers a slug over another organization's name", (done: Mocha.Done): void => {
+    // Slugs are unique server-side but names are not, so a single find() over id|slug|name could match
+    // the wrong org by name. "acme" is one org's slug and another's name; the slug has to win.
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>{ accessKey: "key" });
+    sandbox.stub(cmdexec.sdk, "getOrgs").callsFake(() =>
+      Q([
+        { id: "id-slug-acme", slug: "acme", name: "Beta Corp", role: "admin", isOwner: true },
+        { id: "id-named-acme", slug: "beta-co", name: "acme", role: "admin", isOwner: true },
+      ])
+    );
+
+    cmdexec.execute(<cli.IOrgUseCommand>{ type: cli.CommandType.orgUse, organization: "acme" }).done((): void => {
+      assert.strictEqual(writtenConnectionInfo.orgId, "id-slug-acme");
+      done();
+    }, done);
+  });
+
+  it("orgUse refuses a name two organizations share", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>{ accessKey: "key" });
+    sandbox.stub(cmdexec.sdk, "getOrgs").callsFake(() =>
+      Q([
+        { id: "id-1", slug: "acme", name: "Acme Inc", role: "admin", isOwner: true },
+        { id: "id-2", slug: "acme-2", name: "Acme Inc", role: "admin", isOwner: true },
+      ])
+    );
+
+    cmdexec.execute(<cli.IOrgUseCommand>{ type: cli.CommandType.orgUse, organization: "Acme Inc" }).done(
+      () => done(new Error("an ambiguous name should be refused")),
+      (error: any) => {
+        assert.ok(/matches 2 organizations/.test(error.message), error.message);
+        done();
+      }
+    );
   });
 
   it("sessionList lists session name and expires fields", (done: Mocha.Done): void => {

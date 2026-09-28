@@ -22,6 +22,7 @@ import {
   Deployment,
   DeploymentMetrics,
   Headers,
+  Org,
   Package,
   PackageInfo,
   ServerAccessKey,
@@ -72,6 +73,7 @@ class AccountManager {
   public static ERROR_UNAUTHORIZED = 401;
 
   private _accessKey: string;
+  private _orgId: string | null = null;
   private _serverUrl: string;
   private _customHeaders: Headers;
 
@@ -151,6 +153,15 @@ class AccountManager {
         name: res.body.accessKey.friendlyName,
       };
     });
+  }
+
+  // Everything the CLI sends is scoped to this organization while it is set.
+  public setOrgId(orgId: string | null): void {
+    this._orgId = orgId;
+  }
+
+  public getOrgs(): Promise<Org[]> {
+    return this.get(urlEncode(["/orgs"])).then((res: JsonResponse) => res.body.orgs as Org[]);
   }
 
   public getAccessKeys(): Promise<AccessKey[]> {
@@ -646,6 +657,9 @@ class AccountManager {
     request.set("Accept", `application/vnd.code-push.v${AccountManager.API_VERSION}+json`);
     request.set("Authorization", `Bearer ${this._accessKey}`);
     request.set("X-CodePush-SDK-Version", packageJson.version);
+    if (this._orgId) {
+      request.set("x-org-id", this._orgId);
+    }
   }
 }
 

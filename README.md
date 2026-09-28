@@ -38,6 +38,7 @@ Before upgrading a CI pipeline to 1.2.0, note two changes: an unknown flag is no
 - [Usage](#usage)
   - [Authentication](#authentication)
   - [Access Keys](#access-keys)
+  - [Organizations](#organizations)
 - [App Management](#app-management)
   - [Code Signing - Set Public Key](#code-signing---set-public-key)
   - [App Collaboration](#app-collaboration)
@@ -113,6 +114,31 @@ dpctl access-key patch <accessKeyName> --name "new name" --ttl 10d
 ```
 
 _NOTE: When patching the TTL of an existing access key, its expiration date will be set relative to the current time, with no regard for its previous value._
+
+### Organizations
+
+Apps that belong to an organization are only reachable in that organization's context. If your account belongs to any, `dpctl login` asks which one to use once, at the end of login, and remembers the answer. Pick the personal account there and nothing changes.
+
+It asks nothing when there is nothing to ask: you passed `--org`, your account belongs to no organizations, or stdin is not a terminal, which is the CI case. Change it any time:
+
+```
+dpctl org list
+dpctl org use acme
+dpctl org clear
+```
+
+`dpctl org list` marks the organization in use with a `*`. `dpctl org use` takes a slug, a name or an id, and saves your choice to the session file, so later commands need no extra typing. `dpctl org clear` goes back to your personal account.
+
+Two ways to override it for a single command or a single job:
+
+| Override             | Takes              | Use for                                       |
+| -------------------- | ------------------ | --------------------------------------------- |
+| `--org <org>`        | Slug, name or id   | A one-off against another organization        |
+| `DEPLOYPULSE_ORG_ID` | An id              | CI, where there is no session file to save to |
+
+`--org` wins over `DEPLOYPULSE_ORG_ID`, which wins over `dpctl org use`. If you authenticate with `DEPLOYPULSE_ACCESS_KEY` rather than `dpctl login`, there is no session file, so use the environment variable.
+
+The environment variable takes an **id**, which `dpctl org list --format json` prints, and is sent as-is. `--org` accepts a slug or a name too, which costs one extra request to resolve, so CI is better off with the id.
 
 ## App Management
 
