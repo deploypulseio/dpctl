@@ -7,6 +7,11 @@ import * as crypto from "crypto";
 import debugCommand from "./commands/debug";
 import * as fs from "fs";
 import * as hashUtils from "./hash-utils";
+import * as recursiveFs from "recursive-fs";
+import * as yazl from "yazl";
+import slash = require("slash");
+import { envWithoutCredentials } from "./child-env";
+import { compileHermesIfEnabled } from "./react-native-utils";
 import { appPlatformLabel, assertReleasePlatform, checkReleaseProjectKind } from "./ota-runtime";
 import * as chalk from "chalk";
 const g2js = require("gradle-to-js/lib/parser");
@@ -597,6 +602,9 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.appSetPublicKey:
         return appSetPublicKey(<cli.IAppSetPublicKeyCommand>command);
+
+      case cli.CommandType.bundleReact:
+        return bundleReact(<cli.IBundleReactCommand>command);
 
       case cli.CommandType.appTransfer:
         return appTransfer(<cli.IAppTransferCommand>command);
@@ -1457,6 +1465,21 @@ export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> =
           command.sourcemapOutput
         )
       )
+      // Hermes runs after bundling and before the upload: it rewrites the bundle in place.
+      .then(() =>
+        Q(
+          compileHermesIfEnabled({
+            platform,
+            bundleName,
+            outputFolder,
+            sourcemapOutput: command.sourcemapOutput,
+            useHermes: command.useHermes,
+            extraHermesFlags: command.extraHermesFlags,
+            podFile: command.podFile,
+            log,
+          })
+        )
+      )
       .then(() => {
         log(chalk.cyan("\nReleasing update contents to DeployPulse:\n"));
         return release(releaseCommand);
@@ -1471,6 +1494,111 @@ export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> =
         throw err;
       })
   );
+};
+
+export const bundleReact = (command: cli.IBundleReactCommand): Promise<void> => {
+  let bundleName: string = command.bundleName;
+  let entryFile: string = command.entryFile;
+  const isTempDir = !command.outputDir;
+  const outputFolder: string = command.outputDir || path.join(os.tmpdir(), "dpctl");
+  const platform: string = (command.platform = command.platform.toLowerCase());
+  const outputZipPath: string = path.resolve(command.outputPath || "bundle.zip");
+
+  return Q(<void>null)
+    .then((): void => {
+      switch (platform) {
+        case "android":
+        case "ios":
+        case "windows":
+          if (!bundleName) {
+            bundleName = platform === "ios" ? "main.jsbundle" : `index.${platform}.bundle`;
+          }
+          break;
+        default:
+          throw new Error('Platform must be either "android", "ios" or "windows".');
+      }
+
+      // Only the read is guarded. Wrapping the checks too made their messages unreachable, so a project
+      // with no "name" was reported as an unreadable package.json.
+      let projectPackageJson: any;
+      try {
+        projectPackageJson = require(path.join(process.cwd(), "package.json"));
+      } catch {
+        throw new Error(
+          'Unable to find or read "package.json" in the CWD. The "bundle-react" command must be executed in a React Native project folder.'
+        );
+      }
+      if (!projectPackageJson.name) {
+        throw new Error('The "package.json" file in the CWD does not have the "name" field set.');
+      }
+      if (!projectPackageJson.dependencies?.["react-native"]) {
+        throw new Error("The project in the CWD is not a React Native project.");
+      }
+
+      if (!entryFile) {
+        entryFile = `index.${platform}.js`;
+        if (fileDoesNotExistOrIsDirectory(entryFile)) entryFile = "index.js";
+        if (fileDoesNotExistOrIsDirectory(entryFile)) {
+          throw new Error(`Entry file "index.${platform}.js" or "index.js" does not exist.`);
+        }
+      } else if (fileDoesNotExistOrIsDirectory(entryFile)) {
+        throw new Error(`Entry file "${entryFile}" does not exist.`);
+      }
+    })
+    .then(() => createEmptyTempReleaseFolder(outputFolder))
+    .then(() => deleteFolder(`${os.tmpdir()}/react-*`, /*glob*/ true))
+    .then(() =>
+      runReactNativeBundleCommand(bundleName, command.development || false, entryFile, outputFolder, platform, command.sourcemapOutput)
+    )
+    // Before the signature step, which hashes outputFolder: signing the JS and then swapping in
+    // bytecode would produce a zip whose signature fails verification on device.
+    .then(() =>
+      Q(
+        compileHermesIfEnabled({
+          platform,
+          bundleName,
+          outputFolder,
+          sourcemapOutput: command.sourcemapOutput,
+          useHermes: command.useHermes,
+          extraHermesFlags: command.extraHermesFlags,
+          podFile: command.podFile,
+          log,
+        })
+      )
+    )
+    .then((): Promise<string | undefined> => {
+      if (!command.privateKey) return Q(undefined);
+      const privateKey = resolvePrivateKey(command.privateKey);
+      return hashUtils
+        .generatePackageHashFromDirectory(outputFolder, signatureManifestBase(outputFolder))
+        .then((packageHash: string) => createRS256JWT(privateKey, packageHash));
+    })
+    .then((signatureJwt: string | undefined): Promise<void> => {
+      return Promise<void>((resolve, reject) => {
+        recursiveFs.readdirr(outputFolder, (error?: any, _dirs?: string[], files?: string[]) => {
+          if (error) { reject(error); return; }
+          const baseDir = path.dirname(outputFolder);
+          const zipFile = new yazl.ZipFile();
+          const writeStream = fs.createWriteStream(outputZipPath);
+          zipFile.outputStream.pipe(writeStream).on("error", reject).on("close", resolve);
+          for (const file of files) {
+            zipFile.addFile(file, slash(path.relative(baseDir, file)));
+          }
+          if (signatureJwt) {
+            zipFile.addBuffer(Buffer.from(signatureJwt), "CodePush/.codepushrelease");
+          }
+          zipFile.end();
+        });
+      });
+    })
+    .then((): void => {
+      log(chalk.green(`\nSuccessfully created bundle: ${outputZipPath}\n`));
+      if (isTempDir) deleteFolder(outputFolder);
+    })
+    .catch((err: Error) => {
+      if (isTempDir) deleteFolder(outputFolder);
+      throw err;
+    });
 };
 
 function rollback(command: cli.IRollbackCommand): Promise<void> {
@@ -1551,7 +1679,7 @@ export const runReactNativeBundleCommand = (
   }
 
   log(chalk.cyan('Running "react-native bundle" command:\n'));
-  const reactNativeBundleProcess = spawn("node", reactNativeBundleArgs);
+  const reactNativeBundleProcess = spawn("node", reactNativeBundleArgs, { env: envWithoutCredentials() });
   log(`node ${reactNativeBundleArgs.join(" ")}`);
 
   return Promise<void>((resolve, reject, notify) => {

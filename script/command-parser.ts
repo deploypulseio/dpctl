@@ -579,6 +579,86 @@ yargs
       .example("logout", "Logs out and ends your current session");
     addCommonConfiguration(yargs);
   })
+  .command("bundle-react", "Bundle a React Native update into a .zip for manual upload", (yargs: yargs.Argv) => {
+    yargs
+      .usage(USAGE_PREFIX + " bundle-react <platform> [options]")
+      .demand(/*count*/ 1, /*max*/ 1)
+      .example("bundle-react ios", 'Bundles the React Native iOS project in the current working directory → ./bundle.zip')
+      .example("bundle-react android --output release.zip", "Bundles Android and writes to release.zip")
+      .example("bundle-react ios -k ./private.pem --output signed.zip", "Bundles iOS with code signing")
+      .option("bundleName", {
+        alias: "b",
+        default: null,
+        demand: false,
+        description: 'Name of the generated JS bundle file. Defaults to "main.jsbundle" (iOS) or "index.<platform>.bundle"',
+        type: "string",
+      })
+      .option("development", {
+        alias: "dev",
+        default: false,
+        demand: false,
+        description: "Specifies whether to generate a dev or release build",
+        type: "boolean",
+      })
+      .option("entryFile", {
+        alias: "e",
+        default: null,
+        demand: false,
+        description: 'Path to the app\'s entry Javascript file. Defaults to "index.<platform>.js" then "index.js"',
+        type: "string",
+      })
+      .option("sourcemapOutput", {
+        alias: "s",
+        default: null,
+        demand: false,
+        description: "Path to write the sourcemap. If omitted, no sourcemap is generated.",
+        type: "string",
+      })
+      .option("outputDir", {
+        alias: "o",
+        default: null,
+        demand: false,
+        description: "Directory to keep intermediate bundle files after zipping. If omitted, a temp dir is used and cleaned up.",
+        type: "string",
+      })
+      .option("output", {
+        default: "bundle.zip",
+        demand: false,
+        description: "Destination path for the final .zip file (default: bundle.zip)",
+        type: "string",
+      })
+      .option("useHermes", {
+        demand: false,
+        description:
+          "Compile the JS bundle to Hermes bytecode before zipping, bypassing automatic detection. Pass --no-useHermes to skip Hermes even when the project enables it.",
+        type: "boolean",
+      })
+      .option("extraHermesFlags", {
+        alias: "hf",
+        default: [],
+        demand: false,
+        description: "Flags to pass to the Hermes bytecode compiler. Can be specified multiple times.",
+        type: "array",
+      })
+      .option("podFile", {
+        alias: "pod",
+        default: null,
+        demand: false,
+        description: "Path to the CocoaPods config file (iOS only), used to auto-detect whether Hermes is enabled. Ignored if --useHermes is specified.",
+        type: "string",
+      })
+      .option("privateKey", {
+        // `privateKeyPath` / `private-key-path` are what upstream code-push called this and what older
+        // docs still show; accepted so a migrated script does not hard-fail under strictOptions.
+        alias: ["private-key", "privateKeyPath", "private-key-path", "k"],
+        default: null,
+        demand: false,
+        description: "RSA private key for code signing: either a file path (./private.pem) or inline PEM content",
+        type: "string",
+      });
+
+    addCommonConfiguration(yargs);
+  })
   .command("org", "View and switch the organization your commands run against", (yargs: yargs.Argv) => {
     isValidCommandCategory = true;
     yargs
@@ -882,6 +962,26 @@ yargs
         demand: false,
         description:
           'Path to the app\'s entry Javascript file. If omitted, "index.<platform>.js" and then "index.js" will be used (if they exist)',
+        type: "string",
+      })
+      .option("useHermes", {
+        demand: false,
+        description:
+          "Compile the JS bundle to Hermes bytecode before release, bypassing automatic detection. Pass --no-useHermes to skip Hermes even when the project enables it.",
+        type: "boolean",
+      })
+      .option("extraHermesFlags", {
+        alias: "hf",
+        default: [],
+        demand: false,
+        description: "Flags to pass to the Hermes bytecode compiler. Can be specified multiple times.",
+        type: "array",
+      })
+      .option("podFile", {
+        alias: "pod",
+        default: null,
+        demand: false,
+        description: "Path to the CocoaPods config file (iOS only), used to auto-detect whether Hermes is enabled. Ignored if --useHermes is specified.",
         type: "string",
       })
       .option("gradleFile", {
@@ -1416,6 +1516,24 @@ export function createCommand(): cli.ICommand {
         }
         break;
 
+      case "bundle-react":
+        if (arg1) {
+          cmd = { type: cli.CommandType.bundleReact };
+          const bundleReactCommand = <cli.IBundleReactCommand>cmd;
+          bundleReactCommand.platform = arg1;
+          bundleReactCommand.bundleName = argv["bundleName"] as any;
+          bundleReactCommand.development = argv["development"] as any;
+          bundleReactCommand.entryFile = argv["entryFile"] as any;
+          bundleReactCommand.sourcemapOutput = argv["sourcemapOutput"] as any;
+          bundleReactCommand.outputDir = argv["outputDir"] as any;
+          bundleReactCommand.outputPath = argv["output"] as any;
+          bundleReactCommand.privateKey = argv["privateKey"] as any;
+          bundleReactCommand.useHermes = argv["useHermes"] as any;
+          bundleReactCommand.extraHermesFlags = argv["extraHermesFlags"] as any;
+          bundleReactCommand.podFile = argv["podFile"] as any;
+        }
+        break;
+
       case "release-react":
         if (arg1 && arg2) {
           cmd = { type: cli.CommandType.releaseReact };
@@ -1441,6 +1559,9 @@ export function createCommand(): cli.ICommand {
           releaseReactCommand.sourcemapOutput = argv["sourcemapOutput"] as any;
           releaseReactCommand.outputDir = argv["outputDir"] as any;
           releaseReactCommand.privateKey = argv["privateKey"] as any;
+          releaseReactCommand.useHermes = argv["useHermes"] as any;
+          releaseReactCommand.extraHermesFlags = argv["extraHermesFlags"] as any;
+          releaseReactCommand.podFile = argv["podFile"] as any;
         }
         break;
 

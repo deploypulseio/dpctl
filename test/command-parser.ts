@@ -72,6 +72,18 @@ describe("command line", function () {
     assert.ok(!/cli\.js/.test(result.output), `the entry file leaked into help: ${result.output.slice(0, 400)}`);
   });
 
+  it("-h is not an alias for --useHermes", () => {
+    const result = run("release-react", "--help");
+    const hermesLine = result.output.split("\n").find((line: string) => line.indexOf("--useHermes") >= 0);
+    assert.ok(hermesLine, "expected a --useHermes option");
+    assert.ok(!/-h, --useHermes/.test(hermesLine), `-h must not be bound to Hermes: ${hermesLine}`);
+  });
+
+  it("--useHermes works under its long name", () => {
+    const result = run("release-react", "--help");
+    assert.ok(/--useHermes/.test(result.output), "the long flag is the supported spelling");
+  });
+
   it("an unrecognized command exits 1 and says which one", () => {
     const result = run("nonsense-command");
     assert.strictEqual(result.status, 1);

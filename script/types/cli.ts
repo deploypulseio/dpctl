@@ -14,6 +14,7 @@ export enum CommandType {
   appRename,
   appSetPublicKey,
   appTransfer,
+  bundleReact,
   collaboratorAdd,
   collaboratorList,
   collaboratorRemove,
@@ -231,6 +232,23 @@ export interface IReleaseReactCommand extends IReleaseBaseCommand {
   sourcemapOutput?: string;
   outputDir?: string;
   config?: string;
+  useHermes?: boolean;
+  extraHermesFlags?: string[];
+  podFile?: string;
+}
+
+export interface IBundleReactCommand extends ICommand {
+  platform: string;
+  bundleName?: string;
+  development?: boolean;
+  entryFile?: string;
+  sourcemapOutput?: string;
+  outputDir?: string;
+  outputPath?: string;
+  privateKey?: string;
+  useHermes?: boolean;
+  extraHermesFlags?: string[];
+  podFile?: string;
 }
 
 export interface IRollbackCommand extends ICommand {

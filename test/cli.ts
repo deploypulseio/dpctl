@@ -11,6 +11,9 @@ import * as codePush from "../script/types";
 import * as cli from "../script/types/cli";
 import * as cmdexec from "../script/command-executor";
 import { assertReleasePlatform, checkReleaseProjectKind, detectCodePushProjectKind } from "../script/ota-runtime";
+import { getiOSHermesEnabled } from "../script/react-native-utils";
+import * as rnUtils from "../script/react-native-utils";
+import * as hashUtilsForTest from "../script/hash-utils";
 import * as hashUtils from "../script/hash-utils";
 import * as os from "os";
 import moment = require("moment");
@@ -1641,6 +1644,115 @@ describe("CLI", () => {
       .done();
   });
 
+  it("bundle-react signs against the base the zip is built with", (done: Mocha.Done): void => {
+    // Must run with outputDir "." to be meaningful: path.join(dir, "..") and path.dirname(dir) agree for
+    // every other path, and "." is what a developer bundling in place actually passes.
+    const { privateKey } = crypto.generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+
+    const bases: string[] = [];
+    sandbox.stub(<any>hashUtilsForTest, "generatePackageHashFromDirectory").callsFake((dir: string, base: string) => {
+      bases.push(base);
+      return Q("deadbeef");
+    });
+    sandbox.stub(rnUtils, "compileHermesIfEnabled").callsFake(() => Promise.resolve());
+
+    // A throwaway React Native project, because bundling in place empties the working directory.
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-bundle-cwd-"));
+    fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ name: "p", dependencies: { "react-native": "0.79.3" } }));
+    fs.writeFileSync(path.join(project, "index.ios.js"), "");
+    const zipDir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-bundle-zip-"));
+    const previousCwd = process.cwd();
+    process.chdir(project);
+
+    const finish = (error?: any): void => {
+      process.chdir(previousCwd);
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(zipDir, { recursive: true, force: true });
+      if (error) return done(error);
+      assert.deepStrictEqual(bases, [path.dirname(".")], "must key the manifest the way the zip is built");
+      done();
+    };
+
+    cmdexec
+      .execute(<any>{
+        type: cli.CommandType.bundleReact,
+        platform: "ios",
+        outputDir: ".",
+        outputPath: path.join(zipDir, "bundle.zip"),
+        privateKey,
+      })
+      .done(() => finish(), finish);
+  });
+
+  it("release-react compiles Hermes after bundling and before the upload", (done: Mocha.Done): void => {
+    var compile: sinon.SinonSpy = sandbox.stub(rnUtils, "compileHermesIfEnabled").callsFake(() => Promise.resolve());
+    sandbox.stub(cmdexec, "release");
+
+    var command: cli.IReleaseReactCommand = {
+      type: cli.CommandType.releaseReact,
+      appName: "a",
+      appStoreVersion: null,
+      deploymentName: "Staging",
+      description: "Hermes",
+      mandatory: false,
+      rollout: null,
+      platform: "ios",
+      useHermes: true,
+      extraHermesFlags: ["-O"],
+      podFile: "ios/Podfile",
+    };
+
+    ensureInTestAppDirectory();
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(compile);
+      var opts: any = compile.args[0][0];
+      assert.strictEqual(opts.useHermes, true);
+      assert.deepStrictEqual(opts.extraHermesFlags, ["-O"]);
+      assert.strictEqual(opts.podFile, "ios/Podfile");
+      assert.strictEqual(opts.platform, "ios");
+      assert.strictEqual(opts.bundleName, "main.jsbundle");
+      done();
+    }, done);
+  });
+
+  it("release-react does not hand the access key to Metro", (done: Mocha.Done): void => {
+    // Metro runs Babel plugins and transformers from the app's own node_modules, any of which could
+    // read a full-access key out of the environment.
+    process.env.DEPLOYPULSE_ACCESS_KEY = "super-secret";
+    sandbox.stub(rnUtils, "compileHermesIfEnabled").callsFake(() => Promise.resolve());
+    sandbox.stub(cmdexec, "release");
+
+    var command: cli.IReleaseReactCommand = {
+      type: cli.CommandType.releaseReact,
+      appName: "a",
+      appStoreVersion: null,
+      deploymentName: "Staging",
+      description: "Env",
+      mandatory: false,
+      rollout: null,
+      platform: "ios",
+    };
+
+    ensureInTestAppDirectory();
+
+    var finish = (error?: any): void => {
+      delete process.env.DEPLOYPULSE_ACCESS_KEY;
+      if (error) return done(error);
+      sinon.assert.calledOnce(spawn);
+      var options: any = spawn.args[0][2];
+      assert.ok(options && options.env, "Metro must be spawned with an explicit environment");
+      assert.strictEqual(options.env.DEPLOYPULSE_ACCESS_KEY, undefined);
+      done();
+    };
+
+    cmdexec.execute(command).done(() => finish(), finish);
+  });
+
   it('release-react defaults bundle name to "main.jsbundle" if not provided and platform is "ios"', (done: Mocha.Done): void => {
     var command: cli.IReleaseReactCommand = {
       type: cli.CommandType.releaseReact,
@@ -2313,6 +2425,38 @@ describe("CLI", () => {
       }
     );
   }
+});
+
+describe("getiOSHermesEnabled", () => {
+  const EXPO_PODFILE_LINE = "  :hermes_enabled => podfile_properties['expo.jsEngine'] == nil || podfile_properties['expo.jsEngine'] == 'hermes',\n";
+  const roots: string[] = [];
+
+  const check = (podfile: string, properties?: object): boolean => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-test-podfile-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "ios"));
+    fs.writeFileSync(path.join(root, "ios", "Podfile"), podfile);
+    if (properties) fs.writeFileSync(path.join(root, "ios", "Podfile.properties.json"), JSON.stringify(properties));
+    return getiOSHermesEnabled(undefined, root);
+  };
+
+  after(() => roots.forEach((root: string) => fs.rmSync(root, { recursive: true, force: true })));
+
+  it("detects an explicit :hermes_enabled => true", (): void => {
+    assert.equal(check("use_react_native!(\n  :hermes_enabled => true,\n)\n"), true);
+  });
+
+  it("does not guess for the React Native template, which sets no flag", (): void => {
+    assert.equal(check("use_react_native!(\n  :path => config[:reactNativePath],\n)\n"), false);
+  });
+
+  it("follows Expo's generated Podfile: Hermes unless Podfile.properties.json names another engine", (): void => {
+    const podfile = `use_react_native!(\n${EXPO_PODFILE_LINE})\n`;
+    assert.equal(check(podfile, { "expo.jsEngine": "hermes" }), true);
+    assert.equal(check(podfile, {}), true);
+    assert.equal(check(podfile), true);
+    assert.equal(check(podfile, { "expo.jsEngine": "jsc" }), false);
+  });
 });
 
 describe("resolvePrivateKey", () => {
