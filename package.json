@@ -1,7 +1,20 @@
 {
   "name": "@deploypulseio/dpctl",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Management CLI for the DeployPulse CodePush service",
+  "keywords": [
+    "deploypulse",
+    "codepush",
+    "code-push",
+    "ota",
+    "over-the-air",
+    "react-native",
+    "expo",
+    "expo-updates",
+    "hot-update",
+    "mobile",
+    "cli"
+  ],
   "main": "./bin/script/cli.js",
   "scripts": {
     "start": "node ./bin/script/cli.js",
@@ -11,7 +24,7 @@
     "prettier": "prettier --write \"./**/*.ts\"",
     "lint": "npx eslint ./script/**/*.ts",
     "lint:fix": "npx eslint ./script/**/*.ts --fix",
-    "test": "mocha --require ts-node/register ./test/cli.ts ./test/hash-utils.ts ./test/acquisition-sdk.ts ./test/management-sdk.ts ./test/command-parser.ts --reporter mochawesome --exit"
+    "test": "mocha --require ts-node/register ./test/cli.ts ./test/hash-utils.ts ./test/acquisition-sdk.ts ./test/management-sdk.ts ./test/command-parser.ts ./test/config-file.ts --reporter mochawesome --exit"
   },
   "bin": {
     "dpctl": "./bin/script/cli.js"
@@ -26,7 +39,7 @@
     "email": "support@deploypulse.io"
   },
   "files": [
-    "bin/**",
+    "bin/script/**",
     "README.md",
     "LICENSE*",
     "NOTICE"

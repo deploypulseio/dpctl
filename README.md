@@ -12,7 +12,13 @@ This is a fork of the code-push-standalone CLI tool open-sourced by Microsoft, m
 
 ## Installation
 
-To install and run the DeployPulse CLI, follow these steps:
+Install the DeployPulse CLI from npm. It requires Node.js 20.19 or later, or 22.12 or later.
+
+```shell
+npm install -g @deploypulseio/dpctl
+```
+
+To build it from source instead:
 
 1. Clone this repository.
 2. Install the necessary dependencies by running `npm install`.
