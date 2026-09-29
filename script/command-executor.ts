@@ -861,6 +861,10 @@ export const deserializeConnectionInfo = (): ILoginConnectionInfo => {
     const savedConnection: string = fs.readFileSync(configFilePath, {
       encoding: "utf8",
     });
+
+    // Repaired on read, not only on write: someone who was already logged in before this change never
+    // takes a write path again, so their key would stay world-readable forever.
+    tightenConfigFilePermissions();
     let connectionInfo: ILegacyLoginConnectionInfo | ILoginConnectionInfo = JSON.parse(savedConnection);
 
     // If the connection info is in the legacy format, convert it to the modern format
@@ -2244,8 +2248,32 @@ function orgClear(command: cli.ICommand): Promise<void> {
 // `export const`, not `export function`: TypeScript compiles calls to an exported const through the
 // exports object, which is what lets the tests stub this and keep the real session file untouched.
 export const writeConnectionInfo = (connectionInfo: ILoginConnectionInfo): void => {
-  fs.writeFileSync(configFilePath, JSON.stringify(connectionInfo), { encoding: "utf8" });
+  // Written to a temp file and renamed so an interrupted write cannot leave a half-written session
+  // file behind. The mode is set on creation rather than fixed afterwards, because the contents are a
+  // live access key and there should be no moment where the file exists and anyone can read it.
+  const tempPath = `${configFilePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify(connectionInfo), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tempPath, configFilePath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      /* the temp file may never have been created */
+    }
+    throw error;
+  }
 };
+
+// Best effort: Windows and some network filesystems do not support the mode, and a session that
+// cannot be locked down is still better than no session.
+function tightenConfigFilePermissions(): void {
+  try {
+    fs.chmodSync(configFilePath, 0o600);
+  } catch {
+    /* nothing to tighten, or the filesystem will not say */
+  }
+}
 
 function serializeConnectionInfo(accessKey: string, preserveAccessKeyOnLogout: boolean, org?: OrgContext): void {
   const connectionInfo: ILoginConnectionInfo = {
