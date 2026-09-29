@@ -9,6 +9,7 @@ import superagent = require("superagent");
 import * as recursiveFs from "recursive-fs";
 import * as yazl from "yazl";
 import slash = require("slash");
+import { messageFromResponseText } from "./api-errors";
 
 import Promise = Q.Promise;
 
@@ -805,17 +806,10 @@ class AccountManager {
             });
           }
         } else {
-          if (body) {
-            reject(<CodePushError>{
-              message: body.message,
-              statusCode: this.getErrorStatus(err, res),
-            });
-          } else {
-            reject(<CodePushError>{
-              message: res.text,
-              statusCode: this.getErrorStatus(err, res),
-            });
-          }
+          reject(<CodePushError>{
+            message: messageFromResponseText(res.text),
+            statusCode: this.getErrorStatus(err, res),
+          });
         }
       });
     });
@@ -837,7 +831,8 @@ class AccountManager {
   }
 
   private getErrorMessage(error: Error, response: superagent.Response): string {
-    return response && response.text ? response.text : error.message;
+    const text = response && response.text;
+    return text ? messageFromResponseText(text) : error.message;
   }
 
   private attachCredentials(request: superagent.Request<any>): void {
@@ -860,13 +855,7 @@ class AccountManager {
 }
 
 function expoRouteError(res: superagent.Response): CodePushError {
-  let message: string = res.text;
-  try {
-    message = JSON.parse(res.text).message || message;
-  } catch {
-    /* not JSON; keep the raw text */
-  }
-  return <CodePushError>{ message, statusCode: res.status };
+  return <CodePushError>{ message: messageFromResponseText(res.text), statusCode: res.status };
 }
 
 export = AccountManager;

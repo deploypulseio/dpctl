@@ -748,7 +748,24 @@ function deploymentErrors(command: cli.IDeploymentErrorsCommand): Promise<void> 
 
   return sdk
     .getDeploymentErrors(command.appName, command.deploymentName)
-    .then((result: DeploymentErrorsResult): void => printDeploymentErrors(command, result))
+    .then(
+      (result: DeploymentErrorsResult): Promise<void> | void => {
+        // The reports route answers an unknown app with an empty list, not a 404, so "no failures" and
+        // "no such app" look identical. Only an empty result pays for the check.
+        if (!result.entries.length) {
+          return sdk.getDeployment(command.appName, command.deploymentName).then(
+            (): void => printDeploymentErrors(command, result),
+            (): never => {
+              throw new Error(
+                `There is no "${command.deploymentName}" deployment of an app named "${command.appName}". ` +
+                  `Run "dpctl deployment ls ${command.appName}" to see the deployments this app has.`
+              );
+            }
+          );
+        }
+        printDeploymentErrors(command, result);
+      }
+    )
     .catch((error: any): void => {
       // Failure reports come from an account-level endpoint, so an app-scoped key gets a bare 403.
       // Say why, rather than letting it read as a permissions bug.
