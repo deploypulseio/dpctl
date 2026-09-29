@@ -131,6 +131,38 @@ describe("command line", function () {
     assert.ok(!UNKNOWN_ARGUMENT.test(result.output), result.output.slice(0, 300));
     assert.ok(NOT_LOGGED_IN.test(result.output), result.output.slice(0, 300));
   });
+
+  // ---------------------------------------------------------------------------
+  // Expo Updates. release-expo is a new command, and rollback grew options that only apply to it.
+  // ---------------------------------------------------------------------------
+
+  it("release-expo is registered and documents the export it takes", () => {
+    const result = run("release-expo", "-h");
+    assert.strictEqual(result.status, 0);
+    assert.ok(/Usage: dpctl release-expo/.test(result.output), result.output.slice(0, 400));
+    ["--exportDir", "--runtimeVersion", "--platform"].forEach((flag: string) => {
+      assert.ok(result.output.indexOf(flag) >= 0, `${flag} is missing from release-expo help`);
+    });
+  });
+
+  it("rollback accepts the Expo options", () => {
+    const result = run("rollback", "myapp", "Production", "--platform", "ios", "--runtimeVersion", "1.0.0", "--toEmbedded");
+    assert.ok(!UNKNOWN_ARGUMENT.test(result.output), result.output.slice(0, 300));
+    assert.ok(NOT_LOGGED_IN.test(result.output), result.output.slice(0, 300));
+  });
+
+  it("each command is registered once", () => {
+    // A command registered twice silently wins with its last builder, so its newest options vanish
+    // from the parse while still showing up in the source.
+    const listed = run("--help")
+      .output.split("\n")
+      .map((line: string) => /^\s{2}dpctl ([a-z][a-z-]*)/.exec(line))
+      .filter((match: RegExpExecArray | null): match is RegExpExecArray => !!match)
+      .map((match: RegExpExecArray) => match[1]);
+    const duplicates = listed.filter((name: string, index: number) => listed.indexOf(name) !== index);
+    assert.deepStrictEqual(duplicates, [], `registered more than once: ${duplicates.join(", ")}`);
+    assert.ok(listed.indexOf("release-expo") >= 0, "release-expo should be listed in help");
+  });
 });
 
 // ---------------------------------------------------------------------------

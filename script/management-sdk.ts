@@ -164,6 +164,153 @@ class AccountManager {
     return this.get(urlEncode(["/orgs"])).then((res: JsonResponse) => res.body.orgs as Org[]);
   }
 
+  // The Expo release endpoint sits beside the manifest routes, not under /apps, and is addressed by
+  // deployment key, so callers look the key up first.
+  public releaseExpo(
+    deploymentKey: string,
+    zipFilePath: string,
+    platform: string,
+    runtimeVersion: string,
+    metadata?: object,
+    rollout?: number,
+    description?: string,
+    uploadProgressCallback?: (progress: number) => void
+  ): Promise<void> {
+    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/release`;
+    const releaseInfo = JSON.stringify({
+      platform,
+      runtimeVersion,
+      ...(metadata ? { metadata } : {}),
+      ...(rollout ? { rollout } : {}),
+      ...(description ? { description } : {}),
+    });
+
+    return Promise<void>((resolve, reject) => {
+      const request: superagent.Request<any> = superagent
+        .post(url)
+        .attach("bundle", fs.createReadStream(zipFilePath), "bundle.zip")
+        .field("releaseInfo", releaseInfo);
+
+      this.attachCredentials(request);
+
+      request
+        .on("progress", (event: any) => {
+          if (uploadProgressCallback && event && event.total > 0) {
+            uploadProgressCallback((event.loaded / event.total) * 100);
+          }
+        })
+        .end((err: any, res: superagent.Response) => {
+          if (err && !res) {
+            reject(this.getCodePushError(err, res));
+            return;
+          }
+          if (!res.ok) {
+            reject(expoRouteError(res));
+            return;
+          }
+          resolve(<void>null);
+        });
+    });
+  }
+
+  // Raises every rollout in progress on the channel. Keyed by deployment key, like releaseExpo.
+  public patchExpoRollout(
+    deploymentKey: string,
+    rollout: number
+  ): Promise<Array<{ id: string; platform: string; runtimeVersion: string; rollout: number }>> {
+    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/release`;
+
+    return Promise<Array<{ id: string; platform: string; runtimeVersion: string; rollout: number }>>((resolve, reject) => {
+      const request: superagent.Request<any> = superagent.patch(url).set("Content-Type", "application/json").send({ rollout });
+
+      this.attachCredentials(request);
+
+      request.end((err: any, res: superagent.Response) => {
+        if (err && !res) {
+          reject(this.getCodePushError(err, res));
+          return;
+        }
+        if (!res.ok) {
+          reject(expoRouteError(res));
+          return;
+        }
+        resolve(res.body?.releases ?? []);
+      });
+    });
+  }
+
+  /**
+   * Roll an Expo Updates channel back. Addressed by deployment key, like releaseExpo. Resolves to what was
+   * rolled back, one entry per platform and runtime version, and what was skipped and why.
+   */
+  public rollbackExpo(
+    deploymentKey: string,
+    options: { platform?: string; runtimeVersion?: string; toEmbedded?: boolean } = {}
+  ): Promise<{
+    rollbacks: Array<{ platform: string; runtimeVersion: string; mode: string; releaseId: string }>;
+    skipped: Array<{ platform: string; runtimeVersion: string; reason: string }>;
+  }> {
+    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/rollback`;
+    const body: Record<string, any> = {};
+    if (options.platform) body.platform = options.platform;
+    if (options.runtimeVersion) body.runtimeVersion = options.runtimeVersion;
+    if (options.toEmbedded) body.toEmbedded = true;
+
+    return Promise<{ rollbacks: any[]; skipped: any[] }>((resolve, reject) => {
+      const request: superagent.Request<any> = superagent.post(url).set("Content-Type", "application/json").send(body);
+
+      this.attachCredentials(request);
+
+      request.end((err: any, res: superagent.Response) => {
+        if (err && !res) {
+          reject(this.getCodePushError(err, res));
+          return;
+        }
+        if (!res.ok) {
+          reject(expoRouteError(res));
+          return;
+        }
+        resolve({ rollbacks: res.body?.rollbacks ?? [], skipped: res.body?.skipped ?? [] });
+      });
+    });
+  }
+
+  /**
+   * Promote an Expo Updates channel's releases onto another channel of the same app. Addressed by the source
+   * channel's deployment key, like the other Expo routes; the destination is named, and resolved server-side
+   * inside the same app.
+   */
+  public promoteExpo(
+    deploymentKey: string,
+    to: string,
+    options: { platform?: string; rollout?: number } = {}
+  ): Promise<{
+    promotions: Array<{ platform: string; runtimeVersion: string; label: string | null }>;
+    skipped: Array<{ platform: string; runtimeVersion: string; reason: string }>;
+  }> {
+    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/promote`;
+    const body: Record<string, any> = { to };
+    if (options.platform) body.platform = options.platform;
+    if (options.rollout) body.rollout = options.rollout;
+
+    return Promise<{ promotions: any[]; skipped: any[] }>((resolve, reject) => {
+      const request: superagent.Request<any> = superagent.post(url).set("Content-Type", "application/json").send(body);
+
+      this.attachCredentials(request);
+
+      request.end((err: any, res: superagent.Response) => {
+        if (err && !res) {
+          reject(this.getCodePushError(err, res));
+          return;
+        }
+        if (!res.ok) {
+          reject(expoRouteError(res));
+          return;
+        }
+        resolve({ promotions: res.body?.promotions ?? [], skipped: res.body?.skipped ?? [] });
+      });
+    });
+  }
   public getAccessKeys(): Promise<AccessKey[]> {
     return this.get(urlEncode(["/accessKeys"])).then((res: JsonResponse) => {
       const accessKeys: AccessKey[] = [];
@@ -661,6 +808,16 @@ class AccountManager {
       request.set("x-org-id", this._orgId);
     }
   }
+}
+
+function expoRouteError(res: superagent.Response): CodePushError {
+  let message: string = res.text;
+  try {
+    message = JSON.parse(res.text).message || message;
+  } catch {
+    /* not JSON; keep the raw text */
+  }
+  return <CodePushError>{ message, statusCode: res.status };
 }
 
 export = AccountManager;
