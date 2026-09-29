@@ -420,6 +420,15 @@ describe("Management SDK", () => {
     }, rejectHandler);
   });
 
+  it("identifies itself as dpctl, so a login is not a nameless CLI row", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ apps: [] }), 200);
+    manager.getApps().done(() => {
+      const version = require("../package.json").version;
+      assert.strictEqual(lastRequestHeaders["User-Agent"], `dpctl/${version}`);
+      done();
+    }, rejectHandler);
+  });
+
   it("addAccessKey sends scopes and appIds when they are set", (done: Mocha.Done) => {
     mockReturn(JSON.stringify({ accessKey: { name: "k", friendlyName: "CI key", createdTime: 0, expires: 1 } }), 201);
     manager.addAccessKey("CI key", undefined, ["read"], ["app-a-id"]).done(() => {

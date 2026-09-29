@@ -850,6 +850,9 @@ class AccountManager {
     request.set("Accept", `application/vnd.code-push.v${AccountManager.API_VERSION}+json`);
     request.set("Authorization", `Bearer ${this._accessKey}`);
     request.set("X-CodePush-SDK-Version", packageJson.version);
+    // Node's superagent sends no User-Agent of its own. Without this the server has only the version
+    // header to go on, and a login shows up as a nameless CLI in Recent Logins.
+    request.set("User-Agent", `dpctl/${packageJson.version}`);
     if (this._orgId) {
       request.set("x-org-id", this._orgId);
     }
