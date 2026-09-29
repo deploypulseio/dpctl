@@ -39,6 +39,8 @@ import {
   Org,
   CollaboratorProperties,
   Deployment,
+  DeploymentError,
+  DeploymentErrorsResult,
   DeploymentMetrics,
   Headers,
   Package,
@@ -741,6 +743,95 @@ function deploymentRename(command: cli.IDeploymentRenameCommand): Promise<void> 
   });
 }
 
+function deploymentErrors(command: cli.IDeploymentErrorsCommand): Promise<void> {
+  throwForInvalidOutputFormat(command.format);
+
+  return sdk
+    .getDeploymentErrors(command.appName, command.deploymentName)
+    .then((result: DeploymentErrorsResult): void => printDeploymentErrors(command, result))
+    .catch((error: any): void => {
+      // Failure reports come from an account-level endpoint, so an app-scoped key gets a bare 403.
+      // Say why, rather than letting it read as a permissions bug.
+      let message = String((error && error.message) || "");
+      try {
+        message = JSON.parse(message).message || message;
+      } catch {
+        /* not JSON; keep as-is */
+      }
+      if (/limited to specific apps/i.test(message)) {
+        throw new Error(`${message} Failure reports are account-level, so use a key that is not limited to specific apps.`);
+      }
+      throw error;
+    });
+}
+
+export function summarizeDeploymentErrors(entries: DeploymentError[]) {
+  const devices = new Set<string>();
+  const devicesByLabel = new Map<string, Set<string>>();
+  let totalReports = 0;
+  entries.forEach((entry: DeploymentError) => {
+    devices.add(entry.clientUniqueId);
+    totalReports += Number(entry.failureCount) || 0;
+    if (!devicesByLabel.has(entry.label)) devicesByLabel.set(entry.label, new Set<string>());
+    devicesByLabel.get(entry.label).add(entry.clientUniqueId);
+  });
+  let topFailingRelease: string | null = null;
+  let topDevices = -1;
+  // Most distinct devices wins, ties broken by label so the output is stable.
+  Array.from(devicesByLabel.keys())
+    .sort()
+    .forEach((label: string) => {
+      const count = devicesByLabel.get(label).size;
+      if (count > topDevices) {
+        topDevices = count;
+        topFailingRelease = label;
+      }
+    });
+  return { affectedDevices: devices.size, failedReleases: devicesByLabel.size, totalReports, topFailingRelease };
+}
+
+function printDeploymentErrors(command: cli.IDeploymentErrorsCommand, result: DeploymentErrorsResult): void {
+  const limit = Number.isFinite(Number(command.limit)) ? Number(command.limit) : 50;
+  const summary = summarizeDeploymentErrors(result.entries);
+
+  if (command.format === "json") {
+    printJson({ summary, truncated: result.truncated, entries: result.entries.slice(0, limit) });
+    return;
+  }
+
+  if (!result.entries.length) {
+    log(`No failed updates have been reported for the "${command.deploymentName}" deployment of "${command.appName}".`);
+    return;
+  }
+
+  log(
+    `${summary.affectedDevices} device(s) reported ${summary.totalReports} failed update(s) across ` +
+      `${summary.failedReleases} release(s). Release affecting the most devices: ${summary.topFailingRelease}.`
+  );
+
+  printTable(["Last Seen", "Failed Release", "Last Good", "App Version", "Platform", "Device", "Retries", "Location"], (dataSource: any[]) => {
+    result.entries.slice(0, limit).forEach((entry: DeploymentError) => {
+      dataSource.push([
+        formatDate(new Date(entry.lastSeen).getTime()),
+        entry.label,
+        entry.lastSuccessfulLabel || "",
+        entry.appVersion || "",
+        entry.platform || "",
+        entry.clientUniqueId ? entry.clientUniqueId.slice(0, 8) : "",
+        String(entry.failureCount),
+        [entry.city, entry.region, entry.country].filter(Boolean).join(", "),
+      ]);
+    });
+  });
+
+  if (result.entries.length > limit) {
+    log(`Showing ${limit} of ${result.entries.length} reports. Pass --limit to see more, or --format json.`);
+  }
+  if (result.truncated) {
+    log(chalk.yellow("This app has more failure reports than the API returns, so only the most recent are included."));
+  }
+}
+
 function deploymentHistory(command: cli.IDeploymentHistoryCommand): Promise<void> {
   throwForInvalidOutputFormat(command.format);
 
@@ -873,6 +964,9 @@ export function execute(command: cli.ICommand) {
       case cli.CommandType.deploymentHistoryClear:
         return deploymentHistoryClear(<cli.IDeploymentHistoryClearCommand>command);
 
+      case cli.CommandType.deploymentErrors:
+        return deploymentErrors(<cli.IDeploymentErrorsCommand>command);
+
       case cli.CommandType.deploymentHistory:
         return deploymentHistory(<cli.IDeploymentHistoryCommand>command);
 
@@ -929,6 +1023,18 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.sessionList:
         return sessionList(<cli.ISessionListCommand>command);
+
+      case cli.CommandType.webhookList:
+        return webhookList(<cli.IWebhookListCommand>command);
+
+      case cli.CommandType.webhookAdd:
+        return webhookAdd(<cli.IWebhookAddCommand>command);
+
+      case cli.CommandType.webhookUpdate:
+        return webhookUpdate(<cli.IWebhookUpdateCommand>command);
+
+      case cli.CommandType.webhookRemove:
+        return webhookRemove(<cli.IWebhookRemoveCommand>command);
 
       case cli.CommandType.sessionRemove:
         return sessionRemove(<cli.ISessionRemoveCommand>command);
@@ -2179,6 +2285,72 @@ function sessionRemove(command: cli.ISessionRemoveCommand): Promise<void> {
       log("Session removal cancelled.");
     });
   }
+}
+
+function webhookList(command: cli.IWebhookListCommand): Promise<void> {
+  throwForInvalidOutputFormat(command.format);
+  return sdk.getWebhooks().then((webhooks: any[]): void => {
+    if (command.format === "json") {
+      printJson(webhooks);
+      return;
+    }
+    if (!webhooks || webhooks.length === 0) {
+      log('No webhooks found. Use "dpctl webhook add <url>" to create one.');
+      return;
+    }
+    printTable(["ID", "Name", "URL", "Events", "Enabled"], (dataSource: any[]): void => {
+      webhooks.forEach((webhook: any): void => {
+        dataSource.push([
+          webhook.id,
+          webhook.name ?? "",
+          webhook.url,
+          webhook.events ? webhook.events.join(", ") : "(all)",
+          webhook.enabled ? chalk.green("Yes") : chalk.red("No"),
+        ]);
+      });
+    });
+  });
+}
+
+function webhookAdd(command: cli.IWebhookAddCommand): Promise<void> {
+  const events: string[] | undefined = command.events ? splitEvents(command.events) : undefined;
+  return sdk
+    .addWebhook(command.url, command.name, events, command.secret, command.disabled ? false : undefined)
+    .then((webhook: any): void => {
+      log(`Successfully added webhook "${webhook.id}" for URL: ${webhook.url}`);
+    });
+}
+
+function webhookUpdate(command: cli.IWebhookUpdateCommand): Promise<void> {
+  const updates: Record<string, any> = {};
+  const given = (value: any): boolean => value !== null && value !== undefined;
+  if (given(command.url)) updates.url = command.url;
+  if (given(command.name)) updates.name = command.name;
+  if (given(command.secret)) updates.secret = command.secret;
+  if (given(command.enabled)) updates.enabled = command.enabled;
+  // An empty --events is how you go back to receiving every event, so it is a value, not an omission.
+  if (given(command.events)) updates.events = command.events === "" ? null : splitEvents(command.events);
+
+  if (Object.keys(updates).length === 0) {
+    log("No changes specified. Use --url, --name, --events, --secret, or --enabled/--no-enabled.");
+    return Q(<void>null);
+  }
+  return sdk.updateWebhook(command.id, updates).then((): void => {
+    log(`Successfully updated webhook "${command.id}".`);
+  });
+}
+
+function webhookRemove(command: cli.IWebhookRemoveCommand): Promise<void> {
+  return sdk.removeWebhook(command.id).then((): void => {
+    log(`Successfully removed webhook "${command.id}".`);
+  });
+}
+
+function splitEvents(events: string): string[] {
+  return events
+    .split(",")
+    .map((event: string) => event.trim())
+    .filter(Boolean);
 }
 
 function releaseErrorHandler(error: CodePushError, command: cli.ICommand): void {

@@ -37,6 +37,28 @@ export interface AccessKey {
   appNames?: string[] | null;
 }
 
+/** A device's failure report for one release, as returned by GET /logs/errors. */
+export interface DeploymentError {
+  clientUniqueId: string;
+  appName: string;
+  deploymentName: string;
+  label: string;
+  lastSuccessfulLabel?: string | null;
+  appVersion?: string | null;
+  platform?: string | null;
+  sdkVersion?: string | null;
+  country?: string | null;
+  region?: string | null;
+  city?: string | null;
+  failureCount: number;
+  lastSeen: string;
+}
+
+export interface DeploymentErrorsResult {
+  entries: DeploymentError[];
+  truncated: boolean;
+}
+
 export interface Session {
   loggedInTime: number;
   machineName: string;

@@ -125,6 +125,18 @@ export class SdkStub {
     ]);
   }
 
+  public getDeploymentErrors(appName: string, deploymentName: string): Q.Promise<any> {
+    const all = [
+      { clientUniqueId: "device-one-aaaa", appName: "a", deploymentName: "Production", label: "v5", lastSuccessfulLabel: "v4", appVersion: "1.0.0", platform: "ios", sdkVersion: "10.4.3", country: "US", region: "TX", city: "Dallas", failureCount: 3, lastSeen: "2026-09-14T10:00:00Z" },
+      { clientUniqueId: "device-two-bbbb", appName: "a", deploymentName: "Production", label: "v5", lastSuccessfulLabel: "v4", appVersion: "1.0.0", platform: "android", sdkVersion: "10.4.3", country: "DE", region: null, city: null, failureCount: 1, lastSeen: "2026-09-14T09:00:00Z" },
+      { clientUniqueId: "device-one-aaaa", appName: "a", deploymentName: "Production", label: "v4", lastSuccessfulLabel: "v3", appVersion: "1.0.0", platform: "ios", sdkVersion: "10.4.3", country: "US", region: "TX", city: "Dallas", failureCount: 2, lastSeen: "2026-09-13T10:00:00Z" },
+      { clientUniqueId: "device-three-cc", appName: "a", deploymentName: "Staging", label: "v9", lastSuccessfulLabel: null, appVersion: "1.0.0", platform: "ios", sdkVersion: "10.4.3", country: "US", region: null, city: null, failureCount: 7, lastSeen: "2026-09-14T11:00:00Z" },
+      { clientUniqueId: "device-four-dd", appName: "a", deploymentName: "Staging", label: "v2", lastSuccessfulLabel: null, appVersion: "1.0.0", platform: "ios", sdkVersion: "10.4.3", country: "US", region: null, city: null, failureCount: 1, lastSeen: "2026-09-12T11:00:00Z" },
+      { clientUniqueId: "device-five-ee", appName: "a", deploymentName: "Staging", label: "v2", lastSuccessfulLabel: null, appVersion: "1.0.0", platform: "ios", sdkVersion: "10.4.3", country: "US", region: null, city: null, failureCount: 1, lastSeen: "2026-09-12T12:00:00Z" },
+    ];
+    return Q({ entries: all.filter((e) => e.deploymentName === deploymentName), truncated: false });
+  }
+
   public setOrgId(orgId: string | null): void {
     this.orgId = orgId;
   }
@@ -253,6 +265,26 @@ export class SdkStub {
   public patchExpoRollout(deploymentKey: string, rollout: number): Q.Promise<any[]> {
     return Q([{ id: "release-id", platform: "ios", runtimeVersion: "1.0.0", rollout }]);
   }
+
+  public getWebhooks(): Q.Promise<any[]> {
+    return Q([
+      { id: "wh-1", name: "My Hook", url: "https://example.com/hook", events: ["Upload"], enabled: true },
+      { id: "wh-2", name: null, url: "https://other.com/hook", events: null, enabled: false },
+    ]);
+  }
+
+  public addWebhook(url: string, name?: string, events?: string[], secret?: string, enabled?: boolean): Q.Promise<any> {
+    return Q({ id: "wh-new", url, name: name ?? null, events: events ?? null, enabled: enabled !== false });
+  }
+
+  public updateWebhook(id: string, updates: Record<string, any>): Q.Promise<void> {
+    return Q(<void>null);
+  }
+
+  public removeWebhook(id: string): Q.Promise<void> {
+    return Q(<void>null);
+  }
+
 
   public patchRelease(): Q.Promise<void> {
     return Q(<void>null);
@@ -583,6 +615,96 @@ describe("CLI", () => {
     });
   });
 
+  it("deploymentErrors returns only the requested deployment, with a summary, as JSON", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "Production",
+      format: "json",
+      limit: 50,
+    };
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(log);
+      var output = JSON.parse(log.args[0][0]);
+      assert.equal(output.entries.length, 3);
+      assert.ok(output.entries.every((e: any) => e.deploymentName === "Production"));
+      assert.deepEqual(output.summary, { affectedDevices: 2, failedReleases: 2, totalReports: 6, topFailingRelease: "v5" });
+      assert.equal(output.truncated, false);
+      done();
+    });
+  });
+
+  it("deploymentErrors applies --limit to the JSON entries but not to the summary", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "Production",
+      format: "json",
+      limit: 1,
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var output = JSON.parse(log.args[0][0]);
+      assert.equal(output.entries.length, 1);
+      // The summary counts everything that failed, not just what fits under --limit.
+      assert.deepEqual(output.summary, { affectedDevices: 2, failedReleases: 2, totalReports: 6, topFailingRelease: "v5" });
+      done();
+    });
+  });
+
+  it("deploymentErrors prints a summary line and a table", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "Production",
+      format: "table",
+      limit: 2,
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var lines = log.args.map((args: any[]) => String(args[0]));
+      assert.ok(lines[0].startsWith("2 device(s) reported 6 failed update(s) across 2 release(s)."));
+      assert.ok(lines.some((line: string) => line.includes("Failed Release") && line.includes("v5")));
+      assert.ok(lines.some((line: string) => line.startsWith("Showing 2 of 3 reports.")));
+      // v3 is only ever the third entry's last good release, so it is gone iff the row was dropped.
+      assert.ok(!lines.some((line: string) => line.includes("v3")), "the third report should not be in the table");
+      done();
+    });
+  });
+
+  it("deploymentErrors names the release on the most devices, not the highest label", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "Staging",
+      format: "json",
+      limit: 50,
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var output = JSON.parse(log.args[0][0]);
+      // v9 has one device and 7 retries; v2 has two devices and 2. Devices win.
+      assert.deepEqual(output.summary, { affectedDevices: 3, failedReleases: 2, totalReports: 9, topFailingRelease: "v2" });
+      done();
+    });
+  });
+
+  it("deploymentErrors says so when nothing has failed", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "Nope",
+      format: "table",
+      limit: 50,
+    };
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(log);
+      assert.ok(String(log.args[0][0]).startsWith("No failed updates have been reported"));
+      done();
+    });
+  });
   it("accessKeyRemove removes access key", (done: Mocha.Done): void => {
     var command: cli.IAccessKeyRemoveCommand = {
       type: cli.CommandType.accessKeyRemove,
@@ -2667,6 +2789,199 @@ describe("CLI", () => {
       }
     );
   }
+  // ---------------------------------------------------------------------------
+  // webhook tests
+  // ---------------------------------------------------------------------------
+
+  it("webhookList prints webhooks as table", (done: Mocha.Done): void => {
+    var command: cli.IWebhookListCommand = {
+      type: cli.CommandType.webhookList,
+      format: "table",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(log);
+      done();
+    });
+  });
+
+  it("webhookList prints webhooks as JSON", (done: Mocha.Done): void => {
+    var command: cli.IWebhookListCommand = {
+      type: cli.CommandType.webhookList,
+      format: "json",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(log);
+      var actual: any[] = JSON.parse(log.args[0][0]);
+      assert.ok(Array.isArray(actual));
+      assert.equal(actual[0].id, "wh-1");
+      assert.equal(actual[1].id, "wh-2");
+      done();
+    });
+  });
+
+  it("webhookList shows empty message when no webhooks exist", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec.sdk, "getWebhooks").returns(Q([]));
+
+    var command: cli.IWebhookListCommand = {
+      type: cli.CommandType.webhookList,
+      format: "table",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(log);
+      assert.ok((log.args[0][0] as string).includes("No webhooks found"));
+      done();
+    });
+  });
+
+  it("webhookAdd creates webhook with URL only", (done: Mocha.Done): void => {
+    var command: cli.IWebhookAddCommand = {
+      type: cli.CommandType.webhookAdd,
+      url: "https://example.com/hook",
+    };
+
+    var addWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(addWebhook);
+      sinon.assert.calledWith(addWebhook, "https://example.com/hook", undefined, undefined, undefined, undefined);
+      sinon.assert.calledOnce(log);
+      assert.ok((log.args[0][0] as string).includes("Successfully added webhook"));
+      done();
+    });
+  });
+
+  it("webhookAdd creates webhook with name, events, and secret", (done: Mocha.Done): void => {
+    var command: cli.IWebhookAddCommand = {
+      type: cli.CommandType.webhookAdd,
+      url: "https://example.com/hook",
+      name: "My Hook",
+      events: "Upload,Rollback",
+      secret: "mysecret",
+    };
+
+    var addWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(addWebhook);
+      sinon.assert.calledWith(addWebhook, "https://example.com/hook", "My Hook", ["Upload", "Rollback"], "mysecret", undefined);
+      done();
+    });
+  });
+
+  it("webhookAdd creates webhook in disabled state when --disabled is set", (done: Mocha.Done): void => {
+    var command: cli.IWebhookAddCommand = {
+      type: cli.CommandType.webhookAdd,
+      url: "https://example.com/hook",
+      disabled: true,
+    };
+
+    var addWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "addWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(addWebhook);
+      sinon.assert.calledWith(addWebhook, "https://example.com/hook", undefined, undefined, undefined, false);
+      done();
+    });
+  });
+
+  it("webhookUpdate updates webhook URL", (done: Mocha.Done): void => {
+    var command: cli.IWebhookUpdateCommand = {
+      type: cli.CommandType.webhookUpdate,
+      id: "wh-1",
+      url: "https://new.example.com/hook",
+    };
+
+    var updateWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "updateWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(updateWebhook);
+      sinon.assert.calledWith(updateWebhook, "wh-1", { url: "https://new.example.com/hook" });
+      sinon.assert.calledOnce(log);
+      assert.ok((log.args[0][0] as string).includes("Successfully updated webhook"));
+      done();
+    });
+  });
+
+  it("webhookUpdate enables webhook via --enabled flag", (done: Mocha.Done): void => {
+    var command: cli.IWebhookUpdateCommand = {
+      type: cli.CommandType.webhookUpdate,
+      id: "wh-1",
+      enabled: true,
+    };
+
+    var updateWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "updateWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledWith(updateWebhook, "wh-1", { enabled: true });
+      done();
+    });
+  });
+
+  it("webhookUpdate parses events from comma-separated string", (done: Mocha.Done): void => {
+    var command: cli.IWebhookUpdateCommand = {
+      type: cli.CommandType.webhookUpdate,
+      id: "wh-1",
+      events: "Upload,Promote",
+    };
+
+    var updateWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "updateWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledWith(updateWebhook, "wh-1", { events: ["Upload", "Promote"] });
+      done();
+    });
+  });
+
+  it("webhookUpdate clears event filter when events is empty string", (done: Mocha.Done): void => {
+    var command: cli.IWebhookUpdateCommand = {
+      type: cli.CommandType.webhookUpdate,
+      id: "wh-1",
+      events: "",
+    };
+
+    var updateWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "updateWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledWith(updateWebhook, "wh-1", { events: null });
+      done();
+    });
+  });
+
+  it("webhookUpdate logs message and skips SDK call when no fields are provided", (done: Mocha.Done): void => {
+    var command: cli.IWebhookUpdateCommand = {
+      type: cli.CommandType.webhookUpdate,
+      id: "wh-1",
+    };
+
+    var updateWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "updateWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.notCalled(updateWebhook);
+      sinon.assert.calledOnce(log);
+      assert.ok((log.args[0][0] as string).includes("No changes specified"));
+      done();
+    });
+  });
+
+  it("webhookRemove removes webhook by ID", (done: Mocha.Done): void => {
+    var command: cli.IWebhookRemoveCommand = {
+      type: cli.CommandType.webhookRemove,
+      id: "wh-1",
+    };
+
+    var removeWebhook: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "removeWebhook");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.calledOnce(removeWebhook);
+      sinon.assert.calledWith(removeWebhook, "wh-1");
+      sinon.assert.calledOnce(log);
+      assert.ok((log.args[0][0] as string).includes("Successfully removed webhook"));
+      done();
+    });
+  });
   // ---------------------------------------------------------------------------
   // release-expo and the wrong-command check
   // ---------------------------------------------------------------------------

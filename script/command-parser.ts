@@ -312,6 +312,60 @@ function deploymentRemove(commandName: string, yargs: yargs.Argv): void {
   addCommonConfiguration(yargs);
 }
 
+function webhookList(commandName: string, yargs: yargs.Argv): void {
+  isValidCommand = true;
+  yargs.usage(USAGE_PREFIX + " webhook " + commandName).option("format", {
+    alias: "f",
+    default: "table",
+    demand: false,
+    description: 'Output format: "table" or "json"',
+    type: "string",
+  });
+  addCommonConfiguration(yargs);
+}
+
+function webhookRemove(commandName: string, yargs: yargs.Argv): void {
+  isValidCommand = true;
+  yargs
+    .usage(USAGE_PREFIX + " webhook " + commandName + " <id>")
+    .demand(/*count*/ 1, /*max*/ 1) // The id; the category counts the words before it.
+    .example("webhook " + commandName + " abc-123", "Remove the webhook with id abc-123");
+  addCommonConfiguration(yargs);
+}
+
+function deploymentErrors(commandName: string, yargs: yargs.Argv): void {
+  isValidCommand = true;
+  yargs
+    .usage(USAGE_PREFIX + " deployment " + commandName + " <appName> <deploymentName> [options]")
+    .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
+    .example("deployment " + commandName + " MyApp Production", 'Shows failed updates for the "Production" deployment of "MyApp"')
+    .example(
+      "deployment " + commandName + " MyApp Production --format json",
+      "Same, as JSON (for example to fail a CI job when a new release starts failing)"
+    )
+    .option("format", {
+      default: "table",
+      demand: false,
+      description: 'Output format ("json" or "table")',
+      type: "string",
+    })
+    .option("limit", {
+      default: 50,
+      demand: false,
+      description: "Maximum number of failure reports to show",
+      type: "number",
+    })
+    .check((argv: any): any => {
+      // Rejected rather than quietly replaced by the default, which is what --limit 0 used to do.
+      if (!Number.isInteger(argv.limit) || argv.limit < 1) {
+        throw new Error("--limit must be a whole number of 1 or more.");
+      }
+      return true;
+    });
+
+  addCommonConfiguration(yargs);
+}
+
 function deploymentHistory(commandName: string, yargs: yargs.Argv): void {
   isValidCommand = true;
   yargs
@@ -492,6 +546,7 @@ yargs
       })
       .command("list", "List the deployments associated with an app", (yargs: yargs.Argv) => deploymentList("list", yargs))
       .command("ls", "List the deployments associated with an app", (yargs: yargs.Argv) => deploymentList("ls", yargs))
+      .command("errors", "Show failed updates reported by devices for a deployment", (yargs: yargs.Argv) => deploymentErrors("errors", yargs))
       .command("history", "Display the release history for a deployment", (yargs: yargs.Argv) => deploymentHistory("history", yargs))
       .command("h", "Display the release history for a deployment", (yargs: yargs.Argv) => deploymentHistory("h", yargs))
       .command("auto-rollback", "Manage auto-rollback configuration for a deployment", (yargs: yargs.Argv) => {
@@ -1192,6 +1247,112 @@ yargs
 
     addCommonConfiguration(yargs);
   })
+  .command("webhook", "View and manage webhooks for your account", (yargs: yargs.Argv) => {
+    isValidCommandCategory = true;
+    yargs
+      .usage(USAGE_PREFIX + " webhook <command>")
+      .demand(/*count*/ 2, /*max*/ 2)
+      .command("list", "List all webhooks for your account", (yargs: yargs.Argv): void => webhookList("list", yargs))
+      .command("ls", "List all webhooks for your account", (yargs: yargs.Argv): void => webhookList("ls", yargs))
+      .command("add", "Add a new webhook to your account", (yargs: yargs.Argv): void => {
+        isValidCommand = true;
+        yargs
+          .usage(USAGE_PREFIX + " webhook add <url> [options]")
+          .demand(/*count*/ 1, /*max*/ 1) // The url; the category counts the words before it.
+          .example("webhook add https://example.com/hook --events Upload,Rollback", "Add a webhook that fires on uploads and rollbacks")
+          .option("name", {
+            alias: "n",
+            default: null,
+            demand: false,
+            description: "Friendly name for the webhook",
+            type: "string",
+          })
+          .option("events", {
+            alias: "e",
+            default: null,
+            demand: false,
+            description: "Comma-separated list of events to subscribe to. If omitted, all events are sent.",
+            type: "string",
+          })
+          .option("secret", {
+            alias: "s",
+            default: null,
+            demand: false,
+            description: "HMAC signing secret for payload verification",
+            type: "string",
+          })
+          .option("disabled", {
+            alias: "x",
+            default: false,
+            demand: false,
+            description: "Create the webhook in a disabled state",
+            type: "boolean",
+          });
+        addCommonConfiguration(yargs);
+      })
+      .command("update", "Update an existing webhook", (yargs: yargs.Argv): void => {
+        isValidCommand = true;
+        yargs
+          .usage(USAGE_PREFIX + " webhook update <id> [options]")
+          .demand(/*count*/ 1, /*max*/ 1) // The id; the category counts the words before it.
+          .example("webhook update abc-123 --disabled", "Disable an existing webhook")
+          .option("url", {
+            alias: "u",
+            default: null,
+            demand: false,
+            description: "New URL for the webhook",
+            type: "string",
+          })
+          .option("name", {
+            alias: "n",
+            default: null,
+            demand: false,
+            description: "New friendly name",
+            type: "string",
+          })
+          .option("events", {
+            alias: "e",
+            default: null,
+            demand: false,
+            description: "Comma-separated list of events, or empty string to receive all events",
+            type: "string",
+          })
+          .option("secret", {
+            alias: "s",
+            default: null,
+            demand: false,
+            description: "New HMAC signing secret",
+            type: "string",
+          })
+          .option("enabled", {
+            default: null,
+            demand: false,
+            description: "Enable or disable the webhook (--enabled / --no-enabled)",
+            type: "boolean",
+          })
+          // `webhook add` takes --disabled, so update takes it too rather than making people discover
+          // that the same idea is spelled --no-enabled here.
+          .option("disabled", {
+            alias: "x",
+            default: null,
+            demand: false,
+            description: "Disable the webhook. The same as --no-enabled",
+            type: "boolean",
+          })
+          .check((argv: any): any => {
+            if (argv.enabled !== null && argv.enabled !== undefined && argv.disabled !== null && argv.disabled !== undefined) {
+              throw new Error("Pass --enabled or --disabled, not both.");
+            }
+            return true;
+          });
+        addCommonConfiguration(yargs);
+      })
+      .command("remove", "Remove a webhook", (yargs: yargs.Argv): void => webhookRemove("remove", yargs))
+      .command("rm", "Remove a webhook", (yargs: yargs.Argv): void => webhookRemove("rm", yargs))
+      .check((argv: any): any => isValidCommand);
+
+    addCommonConfiguration(yargs);
+  })
   .command("session", "View and manage the current login sessions associated with your account", (yargs: yargs.Argv) => {
     isValidCommandCategory = true;
     yargs
@@ -1475,6 +1636,19 @@ export function createCommand(): cli.ICommand {
             }
             break;
 
+          case "errors":
+            if (arg2 && arg3) {
+              cmd = { type: cli.CommandType.deploymentErrors };
+
+              const deploymentErrorsCommand = <cli.IDeploymentErrorsCommand>cmd;
+
+              deploymentErrorsCommand.appName = arg2;
+              deploymentErrorsCommand.deploymentName = arg3;
+              deploymentErrorsCommand.format = argv["format"] as any;
+              deploymentErrorsCommand.limit = argv["limit"] as any;
+            }
+            break;
+
           case "history":
           case "h":
             if (arg2 && arg3) {
@@ -1699,6 +1873,55 @@ export function createCommand(): cli.ICommand {
           rollbackCommand.platform = argv["platform"] ? String(argv["platform"]) : undefined;
           rollbackCommand.runtimeVersion = argv["runtimeVersion"] ? String(argv["runtimeVersion"]) : undefined;
           rollbackCommand.toEmbedded = Boolean(argv["toEmbedded"]);
+        }
+        break;
+
+      case "webhook":
+        switch (arg1) {
+          case "list":
+          case "ls":
+            cmd = { type: cli.CommandType.webhookList };
+            (<cli.IWebhookListCommand>cmd).format = argv["format"] as any;
+            break;
+
+          case "add":
+            if (arg2) {
+              cmd = { type: cli.CommandType.webhookAdd };
+
+              const webhookAddCommand = <cli.IWebhookAddCommand>cmd;
+
+              webhookAddCommand.url = arg2;
+              webhookAddCommand.name = argv["name"] as any;
+              webhookAddCommand.events = argv["events"] as any;
+              webhookAddCommand.secret = argv["secret"] as any;
+              webhookAddCommand.disabled = argv["disabled"] as any;
+            }
+            break;
+
+          case "update":
+            if (arg2) {
+              cmd = { type: cli.CommandType.webhookUpdate };
+
+              const webhookUpdateCommand = <cli.IWebhookUpdateCommand>cmd;
+
+              webhookUpdateCommand.id = arg2;
+              webhookUpdateCommand.url = argv["url"] as any;
+              webhookUpdateCommand.name = argv["name"] as any;
+              webhookUpdateCommand.events = argv["events"] as any;
+              webhookUpdateCommand.secret = argv["secret"] as any;
+              // --disabled is the other way of saying --no-enabled; the check above rejects both at once.
+              const disabledFlag: any = argv["disabled"];
+              webhookUpdateCommand.enabled = disabledFlag === null || disabledFlag === undefined ? (argv["enabled"] as any) : !disabledFlag;
+            }
+            break;
+
+          case "remove":
+          case "rm":
+            if (arg2) {
+              cmd = { type: cli.CommandType.webhookRemove };
+              (<cli.IWebhookRemoveCommand>cmd).id = arg2;
+            }
+            break;
         }
         break;
 

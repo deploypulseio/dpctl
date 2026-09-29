@@ -53,7 +53,9 @@ Before upgrading a CI pipeline to 1.2.0, note two changes: an unknown flag is no
 - [Rolling Back Updates](#rolling-back-updates)
 - [Auto-Rollback](#auto-rollback)
 - [Viewing Release History](#viewing-release-history)
+- [Viewing Failed Updates](#viewing-failed-updates)
 - [Clearing Release History](#clearing-release-history)
+- [Webhooks](#webhooks)
 
 ## Usage
 
@@ -967,6 +969,26 @@ By default, the history doesn't display the author of each release, but if you a
 
 _NOTE: The history command can also be run using the "h" alias_
 
+## Viewing Failed Updates
+
+When a device installs a release and then rolls it back, most often because the app crashed before calling `notifyAppReady`, the SDK reports a failed update. You can list those reports for a deployment using the following command:
+
+```
+dpctl deployment errors <appName> <deploymentName>
+[--limit <limit>]
+[--format <json|table>]
+```
+
+The output starts with a summary: how many devices reported failures, how many reports there were, and which release affected the most devices. Below it, each report shows the release that failed, the last release that worked on that device, the app version, platform and location.
+
+`--limit` sets how many reports to show (50 by default), and `--format json` gives machine-readable output, for example to fail a CI job when a release you just shipped starts failing.
+
+```shell
+dpctl deployment errors MyApp-iOS Production --limit 100
+```
+
+_NOTE: This reads the same data as the Errors tab in the dashboard, and needs an access key that isn't limited to specific apps._
+
 ## Clearing Release History
 
 You can clear the release history associated with a deployment using the following command:
@@ -976,6 +998,27 @@ dpctl deployment clear <appName> <deploymentName>
 ```
 
 After running this command, client devices configured to receive updates using its associated deployment key will no longer receive the updates that have been cleared. This command is irreversible, and therefore should not be used in a production deployment.
+
+## Webhooks
+
+A webhook posts to a URL of yours when something happens in your account, for example a release or a rollback. Webhooks belong to the account, not to a single app.
+
+```
+dpctl webhook list [--format <json|table>]
+dpctl webhook add <url> [--name <name>] [--events <events>] [--secret <secret>] [--disabled]
+dpctl webhook update <id> [--url <url>] [--name <name>] [--events <events>] [--secret <secret>] [--enabled|--disabled]
+dpctl webhook remove <id>
+```
+
+`--events` takes a comma-separated list, and a webhook with no list receives every event:
+
+```shell
+dpctl webhook add https://example.com/hook --name "Deploy channel" --events Upload,Rollback
+```
+
+To go back to receiving every event, pass an empty list: `dpctl webhook update <id> --events ""`.
+
+`--secret` is used to sign the payload, so your endpoint can verify a request really came from DeployPulse. `--disabled` adds a webhook without turning it on, or turns an existing one off; `--enabled` turns it back on.
 
 ### License
 
