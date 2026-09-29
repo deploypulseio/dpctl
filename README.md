@@ -478,6 +478,9 @@ dpctl release-react <appName> <platform>
 [--targetBinaryVersion <targetBinaryVersion>]
 [--rollout <rolloutPercentage>]
 [--private-key <privateKeyPathOrPem>]
+[--useHermes]
+[--extraHermesFlags <hermesFlags>]
+[--podFile <podFile>]
 ```
 
 The `release-react` command is a React Native-specific version of the "vanilla" [`release`](#releasing-app-updates) command, which supports all of the same parameters (e.g. `--mandatory`, `--description`), yet simplifies the process of releasing updates by performing the following additional behavior:
@@ -485,6 +488,8 @@ The `release-react` command is a React Native-specific version of the "vanilla" 
 1. Running the `react-native bundle` command in order to generate the [update contents](#update-contents-parameter) (JS bundle and assets) that will be released to the DeployPulse API. It uses sensible defaults as much as possible (e.g. creating a non-dev build, assuming an iOS entry file is named `index.ios.js`), but also exposes the relevant `react-native bundle` parameters to enable flexibility (e.g. `--sourcemapOutput`).
 
 2. Inferring the [`targetBinaryVersion`](#target-binary-version-parameter) of this release by using the version name that is specified in your project's `Info.plist` (for iOS) and `build.gradle` (for Android) files.
+
+3. Compiling the bundle to Hermes bytecode when Hermes is enabled for the platform (see the [Hermes parameters](#hermes-parameters)).
 
 To illustrate the difference that the `release-react` command can make, the following is an example of how you might generate and release an update for a React Native app using the "vanilla" `release` command:
 
@@ -614,6 +619,52 @@ This is the same parameter as the one described in the [above section](#private-
 ```shell
 dpctl release-react MyApp-iOS ios --private-key ./private.pem
 ```
+
+#### Hermes parameters
+
+When Hermes is enabled, `release-react` compiles the JS bundle to Hermes bytecode with the `hermesc` that ships with React Native. If you asked for a source map with `--sourcemapOutput`, it composes the Hermes map with it so stack traces resolve to your original source. Hermes is detected automatically:
+
+| Platform | Detected from                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------- |
+| Android  | `hermesEnabled=true` in `android/gradle.properties`, or `enableHermes: true` in `android/app/build.gradle` |
+| iOS      | `:hermes_enabled => true` in `ios/Podfile`, or the Podfile `expo prebuild` generates                    |
+
+The React Native 0.70+ iOS template enables Hermes without writing either, so pass `--useHermes` when releasing for iOS from those projects.
+
+- `--useHermes` compiles to Hermes bytecode even when Hermes isn't detected. There is no short flag: `-h` is help.
+- `--extraHermesFlags` (`-hf`) passes extra flags to `hermesc`.
+- `--podFile` (`-pod`) is the Podfile to check when it isn't `ios/Podfile`.
+
+```shell
+dpctl release-react MyApp-iOS ios --useHermes --sourcemapOutput ./main.jsbundle.map
+```
+
+`bundle-react` accepts the same three parameters.
+
+### Releasing Updates (Expo Updates)
+
+```shell
+dpctl release-expo <appName>
+[--deploymentName <deploymentName>]
+[--platform <ios|android>]
+[--runtimeVersion <runtimeVersion>]
+[--exportDir <exportDir>]
+[--metadata <json>]
+```
+
+`release-expo` is for apps that use `expo-updates` rather than the CodePush SDK. The app must have been created with `--platform expo-v1`. Run it from your project folder:
+
+```shell
+dpctl release-expo MyExpoApp -d Production
+```
+
+It does what `eas update` does before uploading:
+
+1. Runs `npx expo export` for iOS and Android, using the Expo CLI installed in your project.
+2. Resolves each platform's runtime version from your app config with `npx expo-updates runtimeversion:resolve`, so every runtime version policy works, `fingerprint` included.
+3. Uploads each platform as its own release, then removes its temporary files.
+
+Both platforms are exported and packaged before either is uploaded, so a problem with one can't leave the other released on its own. If you run `release-expo` on a CodePush app, dpctl stops before exporting and tells you to use `release-react` instead.
 
 ## Debugging DeployPulse Integration
 
