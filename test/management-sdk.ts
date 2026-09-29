@@ -440,6 +440,45 @@ describe("Management SDK", () => {
     }, rejectHandler);
   });
 
+  // The Expo routes are addressed by deployment key rather than app and deployment name, and they build
+  // their requests directly instead of going through get/post, so what they send is worth pinning down.
+
+  it("the Expo routes live under /expo/v1 and are addressed by deployment key", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ releases: [] }), 200);
+    manager.patchExpoRollout("key with spaces", 25).then(() => {
+      assert.strictEqual(lastRequestUrl, "https://api.deploypulse.io/expo/v1/key%20with%20spaces/release");
+      return manager.rollbackExpo("key with spaces", { toEmbedded: true });
+    }).then(() => {
+      assert.strictEqual(lastRequestUrl, "https://api.deploypulse.io/expo/v1/key%20with%20spaces/rollback");
+      return manager.promoteExpo("key with spaces", "Production");
+    }).then(() => {
+      assert.strictEqual(lastRequestUrl, "https://api.deploypulse.io/expo/v1/key%20with%20spaces/promote");
+      done();
+    }, rejectHandler);
+  });
+
+  it("Expo requests carry the same credentials as every other route", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ releases: [] }), 200);
+    manager.setOrgId("org-id-acme");
+    manager.patchExpoRollout("dkey", 25).then(() => {
+      assert.strictEqual(lastRequestHeaders["Authorization"], "Bearer dummyAccessKey");
+      assert.strictEqual(lastRequestHeaders["x-org-id"], "org-id-acme");
+      done();
+    }, rejectHandler);
+  });
+
+  it("an Expo route error reports the server's message, not the raw body", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ message: "No release to roll back to on this channel." }), 409, {}, /*throwOnError=*/ false);
+    manager.rollbackExpo("dkey").then(
+      () => done(new Error("Should have rejected")),
+      (error: any) => {
+        assert.strictEqual(error.message, "No release to roll back to on this channel.");
+        assert.strictEqual(error.statusCode, 409);
+        done();
+      }
+    );
+  });
+
   it("getAutoRollbackConfig reads autoRollbackConfig, the key the API actually sends", (done: Mocha.Done) => {
     mockReturn(JSON.stringify({ autoRollbackConfig: { enabled: true, threshold: 25 } }), 200);
     manager.getAutoRollbackConfig("appName", "Staging").done((config: any) => {
@@ -459,17 +498,20 @@ function rejectHandler(val: any): void {
 // Wrapper for superagent-mock that abstracts away information not needed for SDK tests
 let lastRequestBody: any;
 let lastRequestHeaders: any;
+let lastRequestUrl: string;
 
-function mockReturn(bodyText: string, statusCode: number, header = {}): void {
+function mockReturn(bodyText: string, statusCode: number, header = {}, throwOnError = true): void {
   lastRequestBody = undefined;
+  lastRequestUrl = undefined;
   require("superagent-mock")(request, [
     {
       pattern: "https://api.deploypulse.io/(.*)",
       fixtures: function (match: any, params: any, headers: any): any {
         lastRequestBody = params;
         lastRequestHeaders = headers || {};
+        lastRequestUrl = match[0];
         var isOk = statusCode >= 200 && statusCode < 300;
-        if (!isOk) {
+        if (!isOk && throwOnError) {
           var err: any = new Error(bodyText);
           err.status = statusCode;
           throw err;

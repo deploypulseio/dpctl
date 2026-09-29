@@ -371,15 +371,16 @@ yargs
           .usage(USAGE_PREFIX + " app add <appName>")
           .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option arguments
           .example("app add MyApp --platform ios", 'Adds a React Native iOS app named "MyApp"')
+          .example("app add MyApp --platform expo-v1", 'Adds an Expo Updates v1 app named "MyApp"')
           .option("platform", {
             alias: "p",
             default: null,
             demand: false,
-            description: 'Target platform: "ios", "android", "expo-cng-ios" or "expo-cng-android". Cannot be changed after creation.',
+            description: 'Target platform: "ios", "android", "expo-cng-ios", "expo-cng-android", or "expo-v1". Cannot be changed after creation.',
             type: "string",
           })
           .check((argv: any): any => {
-            const validPlatforms = ["ios", "android", "expo-cng-ios", "expo-cng-android"];
+            const validPlatforms = ["ios", "android", "expo-cng-ios", "expo-cng-android", "expo-v1"];
             if (argv.platform && !validPlatforms.includes(argv.platform)) {
               throw new Error("--platform must be one of: " + validPlatforms.join(", "));
             }
@@ -655,6 +656,129 @@ yargs
         demand: false,
         description: "RSA private key for code signing: either a file path (./private.pem) or inline PEM content",
         type: "string",
+      });
+
+    addCommonConfiguration(yargs);
+  })
+  .command("release-expo", "Release an Expo Updates update to an app deployment", (yargs: yargs.Argv) => {
+    yargs
+      .usage(USAGE_PREFIX + " release-expo <appName> [options]")
+      .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option argument
+      .example(
+        "release-expo MyApp",
+        'Exports iOS and Android with "npx expo export" and releases both to the "preview" channel of "MyApp"'
+      )
+      .example("release-expo MyApp -d production --platform ios", 'Releases only iOS to the "production" channel')
+      .example(
+        "release-expo MyApp -d production --rollout 10%",
+        'Releases to 10% of devices on the "production" channel. Raise it later with "patch MyApp production --rollout 50%"'
+      )
+      .example(
+        "release-expo MyApp --exportDir ./dist --runtimeVersion 1.0.2",
+        "Releases an export built earlier, for example in a previous CI step"
+      )
+      .option("deploymentName", {
+        alias: ["d", "deployment"],
+        // Expo apps have channels named after the eas.json profiles (development, preview, production), not
+        // CodePush's Staging/Production. Defaulting to preview keeps the CodePush habit of never shipping to
+        // production by accident, on a channel every Expo app actually has.
+        default: "preview",
+        demand: false,
+        description: "Channel to release the update to (development, preview or production by default)",
+        type: "string",
+      })
+      .option("platform", {
+        alias: "p",
+        choices: ["ios", "android"],
+        demand: false,
+        description: "Release only this platform. Omit to release iOS and Android",
+        type: "string",
+      })
+      .option("runtimeVersion", {
+        alias: "r",
+        demand: false,
+        description: "Runtime version to target. Omit to resolve it per platform from your app config, the same way expo-updates does",
+        type: "string",
+      })
+      .option("description", {
+        alias: "des",
+        default: null,
+        demand: false,
+        description: "Description of the changes made to the app with this release",
+        type: "string",
+      })
+      .option("exportDir", {
+        demand: false,
+        description: 'Folder written by "npx expo export" to release instead of exporting. dpctl never deletes it',
+        type: "string",
+      })
+      .option("metadata", {
+        default: null,
+        demand: false,
+        description: "Extra metadata to attach to the release, as a JSON string",
+        type: "string",
+      })
+      // No -r alias: on this command -r is --runtimeVersion.
+      .option("rollout", {
+        demand: false,
+        description: "Percentage of devices this release should be available to. Omit to release to every device",
+        type: "string",
+      })
+      .check((argv: any): any => {
+        if (!isValidRollout(argv)) {
+          throw new Error("--rollout must be a whole percentage from 1 to 100, e.g. 25 or 25%");
+        }
+        if (argv.metadata) {
+          try {
+            JSON.parse(argv.metadata);
+          } catch {
+            throw new Error("--metadata must be valid JSON");
+          }
+        }
+        return true;
+      });
+
+    addCommonConfiguration(yargs);
+  })
+  .command("rollback", "Rollback the latest release for an app deployment", (yargs: yargs.Argv) => {
+    yargs
+      .usage(USAGE_PREFIX + " rollback <appName> <deploymentName> [options]")
+      .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
+      .example("rollback MyApp Production", 'Performs a rollback on the "Production" deployment of "MyApp"')
+      .example(
+        "rollback MyApp Production --targetRelease v4",
+        'Performs a rollback on the "Production" deployment of "MyApp" to the v4 release'
+      )
+      .example(
+        "rollback MyApp production --toEmbedded",
+        'Expo Updates: sends devices on the "production" channel back to the bundle in the store binary'
+      )
+      .option("targetRelease", {
+        alias: "r",
+        default: null,
+        demand: false,
+        description:
+          "Label of the release to roll the specified deployment back to (e.g. v4). If omitted, the deployment will roll back to the previous release.",
+        type: "string",
+      })
+      .option("platform", {
+        alias: "p",
+        choices: ["ios", "android"],
+        demand: false,
+        description: "Expo Updates apps only: roll back only this platform. Omit to roll back both",
+        type: "string",
+      })
+      .option("runtimeVersion", {
+        demand: false,
+        description: "Expo Updates apps only: roll back only this runtime version. Omit to roll back every runtime version the channel serves",
+        type: "string",
+      })
+      .option("toEmbedded", {
+        default: false,
+        demand: false,
+        description:
+          "Expo Updates apps only: send devices back to the bundle built into the store binary, instead of to the previous release",
+        type: "boolean",
       });
 
     addCommonConfiguration(yargs);
@@ -1068,26 +1192,6 @@ yargs
 
     addCommonConfiguration(yargs);
   })
-  .command("rollback", "Rollback the latest release for an app deployment", (yargs: yargs.Argv) => {
-    yargs
-      .usage(USAGE_PREFIX + " rollback <appName> <deploymentName> [options]")
-      .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
-      .example("rollback MyApp Production", 'Performs a rollback on the "Production" deployment of "MyApp"')
-      .example(
-        "rollback MyApp Production --targetRelease v4",
-        'Performs a rollback on the "Production" deployment of "MyApp" to the v4 release'
-      )
-      .option("targetRelease", {
-        alias: "r",
-        default: null,
-        demand: false,
-        description:
-          "Label of the release to roll the specified deployment back to (e.g. v4). If omitted, the deployment will roll back to the previous release.",
-        type: "string",
-      });
-
-    addCommonConfiguration(yargs);
-  })
   .command("session", "View and manage the current login sessions associated with your account", (yargs: yargs.Argv) => {
     isValidCommandCategory = true;
     yargs
@@ -1494,6 +1598,7 @@ export function createCommand(): cli.ICommand {
           deploymentPromoteCommand.noDuplicateReleaseError = argv["noDuplicateReleaseError"] as any;
           deploymentPromoteCommand.rollout = getRolloutValue(argv["rollout"] as any);
           deploymentPromoteCommand.appStoreVersion = argv["targetBinaryVersion"] as any;
+          deploymentPromoteCommand.platform = argv["platform"] ? String(argv["platform"]) : undefined;
         }
         break;
 
@@ -1531,6 +1636,23 @@ export function createCommand(): cli.ICommand {
           bundleReactCommand.useHermes = argv["useHermes"] as any;
           bundleReactCommand.extraHermesFlags = argv["extraHermesFlags"] as any;
           bundleReactCommand.podFile = argv["podFile"] as any;
+        }
+        break;
+
+      case "release-expo":
+        if (arg1) {
+          cmd = { type: cli.CommandType.releaseExpo };
+
+          const releaseExpoCommand = <cli.IReleaseExpoCommand>cmd;
+
+          releaseExpoCommand.appName = arg1;
+          releaseExpoCommand.deploymentName = argv["deploymentName"] as any;
+          releaseExpoCommand.platform = argv["platform"] ? String(argv["platform"]) : undefined;
+          releaseExpoCommand.runtimeVersion = argv["runtimeVersion"] ? String(argv["runtimeVersion"]) : undefined;
+          releaseExpoCommand.exportDir = argv["exportDir"] ? String(argv["exportDir"]) : undefined;
+          releaseExpoCommand.description = argv["description"] ? backslash(String(argv["description"])) : undefined;
+          releaseExpoCommand.metadata = argv["metadata"] as any;
+          releaseExpoCommand.rollout = getRolloutValue(argv["rollout"] as any);
         }
         break;
 
@@ -1574,6 +1696,9 @@ export function createCommand(): cli.ICommand {
           rollbackCommand.appName = arg1;
           rollbackCommand.deploymentName = arg2;
           rollbackCommand.targetRelease = argv["targetRelease"] as any;
+          rollbackCommand.platform = argv["platform"] ? String(argv["platform"]) : undefined;
+          rollbackCommand.runtimeVersion = argv["runtimeVersion"] ? String(argv["runtimeVersion"]) : undefined;
+          rollbackCommand.toEmbedded = Boolean(argv["toEmbedded"]);
         }
         break;
 

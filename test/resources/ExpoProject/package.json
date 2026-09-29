@@ -1,0 +1,8 @@
+{
+  "name": "ExpoProject",
+  "dependencies": {
+    "expo": "~52.0.0",
+    "expo-updates": "~0.26.0",
+    "react-native": "0.76.5"
+  }
+}

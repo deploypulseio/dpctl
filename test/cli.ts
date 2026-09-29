@@ -10,13 +10,14 @@ import * as path from "path";
 import * as codePush from "../script/types";
 import * as cli from "../script/types/cli";
 import * as cmdexec from "../script/command-executor";
-import { assertReleasePlatform, checkReleaseProjectKind, detectCodePushProjectKind } from "../script/ota-runtime";
+import { assertReleasePlatform, checkReleaseProjectKind, detectCodePushProjectKind, detectProjectRuntime } from "../script/ota-runtime";
 import { getiOSHermesEnabled } from "../script/react-native-utils";
 import * as rnUtils from "../script/react-native-utils";
 import * as hashUtilsForTest from "../script/hash-utils";
 import * as hashUtils from "../script/hash-utils";
 import * as os from "os";
 import moment = require("moment");
+const yauzl = require("yauzl");
 
 function assertJsonDescribesObject(json: string, object: Object): void {
   // Make sure JSON is indented correctly
@@ -140,7 +141,13 @@ export class SdkStub {
   public getApp(appName: string): Q.Promise<codePush.App> {
     // No platform: apps created before platforms existed are the common case, and the release guards
     // deliberately do not fire for them.
-    return Q(<codePush.App>{ id: "app-a-id", name: appName, platform: null, deployments: ["Production", "Staging"] });
+    const platforms: { [name: string]: string } = { "expo-app": "expo-v1", "ios-app": "ios" };
+    return Q(<codePush.App>{
+      id: "app-a-id",
+      name: appName,
+      platform: platforms[appName] ?? null,
+      deployments: ["Production", "Staging"],
+    });
   }
 
   public getApps(): Q.Promise<codePush.App[]> {
@@ -174,7 +181,7 @@ export class SdkStub {
   }
 
   public getDeployment(appName: string, deploymentName: string): Q.Promise<codePush.Deployment> {
-    if (appName === "a") {
+    if (appName === "a" || appName === "expo-app" || appName === "ios-app") {
       if (deploymentName === "Production") {
         return Q(this.productionDeployment);
       } else if (deploymentName === "Staging") {
@@ -243,6 +250,10 @@ export class SdkStub {
     });
   }
 
+  public patchExpoRollout(deploymentKey: string, rollout: number): Q.Promise<any[]> {
+    return Q([{ id: "release-id", platform: "ios", runtimeVersion: "1.0.0", rollout }]);
+  }
+
   public patchRelease(): Q.Promise<void> {
     return Q(<void>null);
   }
@@ -309,6 +320,38 @@ export class SdkStub {
 
   public deleteAutoRollbackConfig(): Q.Promise<void> {
     return Q(<void>null);
+  }
+
+  public releaseExpo(
+    deploymentKey: string,
+    zipFilePath: string,
+    platform: string,
+    runtimeVersion: string,
+    metadata?: object,
+    uploadProgressCallback?: (progress: number) => void
+  ): Q.Promise<void> {
+    return Q(<void>null);
+  }
+
+  public promoteExpo(deploymentKey: string, to: string, options: { platform?: string; rollout?: number } = {}): Q.Promise<any> {
+    return Q({
+      promotions: [{ platform: options.platform ?? "ios", runtimeVersion: "1.0.0", label: "v1" }],
+      skipped: [],
+    });
+  }
+
+  public rollbackExpo(deploymentKey: string, options: { platform?: string; runtimeVersion?: string; toEmbedded?: boolean } = {}): Q.Promise<any> {
+    return Q({
+      rollbacks: [
+        {
+          platform: options.platform ?? "ios",
+          runtimeVersion: options.runtimeVersion ?? "1.0.0",
+          mode: options.toEmbedded ? "embedded" : "republish",
+          releaseId: "new-release-id",
+        },
+      ],
+      skipped: [],
+    });
   }
 }
 
@@ -1280,6 +1323,60 @@ describe("CLI", () => {
       .done();
   });
 
+  it("patch on an Expo Updates app raises the channel's rollout through the Expo route", (done: Mocha.Done): void => {
+    var command: cli.IPatchCommand = {
+      type: cli.CommandType.patch,
+      appName: "expo-app",
+      deploymentName: "Production",
+      label: null,
+      disabled: null,
+      description: null,
+      mandatory: null,
+      rollout: 50,
+      appStoreVersion: null,
+    };
+
+    var patchExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "patchExpoRollout");
+    var patchCodePush: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "patchRelease");
+
+    cmdexec
+      .execute(command)
+      .then(() => {
+        sinon.assert.calledOnceWithExactly(patchExpo, "6", 50);
+        sinon.assert.notCalled(patchCodePush);
+        sinon.assert.calledWithMatch(log, sinon.match("to 50% of devices"));
+        done();
+      })
+      .catch(done)
+      .done();
+  });
+
+  it("patch on an Expo Updates app refuses options Expo releases don't have", (done: Mocha.Done): void => {
+    var command: cli.IPatchCommand = {
+      type: cli.CommandType.patch,
+      appName: "expo-app",
+      deploymentName: "Production",
+      label: "v3",
+      disabled: null,
+      description: "notes",
+      mandatory: null,
+      rollout: 50,
+      appStoreVersion: null,
+    };
+
+    var patchExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "patchExpoRollout");
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("can only change --rollout"), err.message);
+        assert.ok(err.message.includes("--label, --description"), err.message);
+        sinon.assert.notCalled(patchExpo);
+        done();
+      })
+      .done();
+  });
   it("promote works successfully", (done: Mocha.Done): void => {
     var command: cli.IPromoteCommand = {
       type: cli.CommandType.promote,
@@ -1353,6 +1450,151 @@ describe("CLI", () => {
     });
   });
 
+  it("promote on an Expo Updates app copies the channel's releases to the destination", (done: Mocha.Done): void => {
+    var command: cli.IPromoteCommand = {
+      type: cli.CommandType.promote,
+      appName: "expo-app",
+      sourceDeploymentName: "Staging",
+      destDeploymentName: "Production",
+      description: null,
+      label: null,
+      mandatory: null,
+      disabled: null,
+      rollout: 25,
+      appStoreVersion: null,
+    };
+
+    var promoteExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "promoteExpo");
+    var promoteCodePush: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "promote");
+
+    cmdexec
+      .execute(command)
+      .then(() => {
+        sinon.assert.calledOnceWithExactly(promoteExpo, "6", "Production", { platform: undefined, rollout: 25 });
+        sinon.assert.notCalled(promoteCodePush);
+        sinon.assert.calledWithMatch(log, sinon.match("Promoted"));
+        done();
+      })
+      .catch(done)
+      .done();
+  });
+
+  it("promote on an Expo Updates app refuses the options Expo releases do not have", (done: Mocha.Done): void => {
+    var command: cli.IPromoteCommand = {
+      type: cli.CommandType.promote,
+      appName: "expo-app",
+      sourceDeploymentName: "Staging",
+      destDeploymentName: "Production",
+      description: "notes",
+      label: "v3",
+      mandatory: null,
+      disabled: null,
+      rollout: null,
+      appStoreVersion: null,
+    };
+
+    var promoteExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "promoteExpo");
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("--label"), err.message);
+        assert.ok(err.message.includes("--description"), err.message);
+        sinon.assert.notCalled(promoteExpo);
+        done();
+      })
+      .done();
+  });
+
+  it("rollback on an Expo Updates app rolls the channel back to the previous release", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "expo-app",
+      deploymentName: "Production",
+      targetRelease: null,
+    };
+
+    var rollbackExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "rollbackExpo");
+    var rollbackCodePush: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "rollback");
+
+    cmdexec
+      .execute(command)
+      .then(() => {
+        sinon.assert.calledOnceWithExactly(rollbackExpo, "6", { platform: undefined, runtimeVersion: undefined, toEmbedded: undefined });
+        sinon.assert.notCalled(rollbackCodePush);
+        sinon.assert.calledWithMatch(log, sinon.match("back to the previous release"));
+        done();
+      })
+      .catch(done)
+      .done();
+  });
+
+  it("rollback --toEmbedded on an Expo Updates app sends devices to the embedded bundle", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "expo-app",
+      deploymentName: "Production",
+      targetRelease: null,
+      platform: "android",
+      toEmbedded: true,
+    };
+
+    var rollbackExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "rollbackExpo");
+
+    cmdexec
+      .execute(command)
+      .then(() => {
+        sinon.assert.calledOnceWithExactly(rollbackExpo, "6", { platform: "android", runtimeVersion: undefined, toEmbedded: true });
+        sinon.assert.calledWithMatch(log, sinon.match("back to the embedded bundle"));
+        done();
+      })
+      .catch(done)
+      .done();
+  });
+
+  it("rollback on an Expo Updates app refuses --targetRelease, which Expo releases have no label for", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "expo-app",
+      deploymentName: "Production",
+      targetRelease: "v4",
+    };
+
+    var rollbackExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "rollbackExpo");
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("--targetRelease does not apply"), err.message);
+        sinon.assert.notCalled(rollbackExpo);
+        done();
+      })
+      .done();
+  });
+
+  it("rollback on a CodePush app refuses the Expo-only options", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "ios-app",
+      deploymentName: "Production",
+      targetRelease: null,
+      toEmbedded: true,
+    };
+
+    var rollback: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "rollback");
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("--toEmbedded"), err.message);
+        sinon.assert.notCalled(rollback);
+        done();
+      })
+      .done();
+  });
   it("release doesn't allow non valid semver ranges", (done: Mocha.Done): void => {
     var command: cli.IReleaseCommand = {
       type: cli.CommandType.release,
@@ -2425,6 +2667,233 @@ describe("CLI", () => {
       }
     );
   }
+  // ---------------------------------------------------------------------------
+  // release-expo and the wrong-command check
+  // ---------------------------------------------------------------------------
+
+  const EXPO_EXPORT_DIR = path.join(__dirname, "resources", "ExpoExport");
+  const EXPO_PROJECT_DIR = path.join(__dirname, "resources", "ExpoProject");
+  const TEST_APP_DIR = path.join(__dirname, "resources", "TestApp");
+
+  function zipEntryNames(zipPath: string): Promise<string[]> {
+    return new Promise<string[]>((resolve, reject) => {
+      yauzl.open(zipPath, { lazyEntries: true }, (err: Error, zipFile: any) => {
+        if (err) return reject(err);
+        const names: string[] = [];
+        zipFile.on("entry", (entry: any) => {
+          names.push(entry.fileName);
+          zipFile.readEntry();
+        });
+        zipFile.on("end", () => resolve(names.sort()));
+        zipFile.on("error", reject);
+        zipFile.readEntry();
+      });
+    });
+  }
+
+  // Runs the command with the working directory set to `dir`, then asserts on how it settled.
+  function executeIn(dir: string, command: cli.ICommand, done: Mocha.Done, check: (error?: any) => void, expectFailure: boolean): void {
+    const previous = process.cwd();
+    process.chdir(dir);
+    cmdexec
+      .execute(command)
+      .then(
+        (): void => {
+          process.chdir(previous);
+          if (expectFailure) throw new Error("Should have rejected");
+          check();
+        },
+        (error: any): void => {
+          process.chdir(previous);
+          if (!expectFailure) throw error;
+          check(error);
+        }
+      )
+      .then(() => done(), done)
+      .done();
+  }
+
+  it("release-expo uploads one zip per platform with the deployment key and runtime version", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    var entriesByPlatform: { [platform: string]: string[] } = {};
+    var releaseExpo: sinon.SinonStub = sandbox
+      .stub(cmdexec.sdk, "releaseExpo")
+      .callsFake((key: string, zipPath: string, platform: string) =>
+        Q(zipEntryNames(zipPath)).then((names: string[]) => {
+          entriesByPlatform[platform] = names;
+        })
+      );
+
+    executeIn(TEST_APP_DIR, command, done, () => {
+      sinon.assert.calledTwice(releaseExpo);
+      assert.deepEqual(
+        releaseExpo.args.map((args: any[]) => [args[0], args[2], args[3]]),
+        [
+          ["6", "ios", "1.0.2"],
+          ["6", "android", "1.0.2"],
+        ]
+      );
+      assert.deepEqual(entriesByPlatform.ios, ["_expo/static/js/ios/index-ios.hbc", "assets/0a1b2c3d", "metadata.json"]);
+      assert.deepEqual(entriesByPlatform.android, ["_expo/static/js/android/index-android.hbc", "assets/0a1b2c3d", "metadata.json"]);
+      // The temporary zips are removed; the export folder that was passed in is left alone.
+      assert.ok(!fs.existsSync(releaseExpo.args[0][1]));
+      assert.ok(fs.existsSync(path.join(EXPO_EXPORT_DIR, "metadata.json")));
+      assert.ok(
+        log.args.some((args: any[]) => String(args[0]).includes('Successfully released iOS and Android to the "Production" deployment'))
+      );
+    }, false);
+  });
+
+  it("release-expo --platform releases only that platform, with metadata", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Staging",
+      platform: "android",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "exposdk:52.0.0",
+      metadata: '{"channel":"stable"}',
+    };
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, () => {
+      sinon.assert.calledOnce(releaseExpo);
+      assert.equal(releaseExpo.args[0][2], "android");
+      assert.equal(releaseExpo.args[0][3], "exposdk:52.0.0");
+      assert.deepEqual(releaseExpo.args[0][4], { channel: "stable" });
+    }, false);
+  });
+
+  it("release-expo uploads nothing when the export is missing a platform", (done: Mocha.Done): void => {
+    var exportDir: string = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-test-export-"));
+    fs.mkdirSync(path.join(exportDir, "_expo"));
+    fs.writeFileSync(path.join(exportDir, "_expo", "index-ios.hbc"), "ios-bytecode");
+    fs.writeFileSync(
+      path.join(exportDir, "metadata.json"),
+      JSON.stringify({ version: 0, bundler: "metro", fileMetadata: { ios: { bundle: "_expo/index-ios.hbc", assets: [] } } })
+    );
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Staging",
+      exportDir,
+      runtimeVersion: "1.0.2",
+    };
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      fs.rmSync(exportDir, { recursive: true, force: true });
+      assert.ok(error.message.includes("has no android bundle"), error.message);
+      sinon.assert.notCalled(releaseExpo);
+    }, true);
+  });
+
+  it("release-expo refuses a CodePush app and names release-react", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "ios-app",
+      deploymentName: "Production",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("is a CodePush app"), error.message);
+      assert.ok(error.message.includes("dpctl release-react ios-app ios -d Production"), error.message);
+      sinon.assert.notCalled(releaseExpo);
+    }, true);
+  });
+
+  it("release-expo refuses an app with no platform, which the server would reject", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "a",
+      deploymentName: "Staging",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("isn't set up for Expo Updates"), error.message);
+      sinon.assert.notCalled(releaseExpo);
+    }, true);
+  });
+
+  it("release-expo rejects when the deployment does not exist", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "NonExistent",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, () => sinon.assert.notCalled(releaseExpo), true);
+  });
+
+  it("release-react refuses an Expo Updates app and names release-expo", (done: Mocha.Done): void => {
+    var command: cli.IReleaseReactCommand = {
+      type: cli.CommandType.releaseReact,
+      appName: "expo-app",
+      appStoreVersion: null,
+      deploymentName: "Staging",
+      description: null,
+      mandatory: false,
+      rollout: null,
+      platform: "ios",
+    };
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("is an Expo Updates app"), error.message);
+      assert.ok(error.message.includes("dpctl release-expo expo-app -d Staging"), error.message);
+      sinon.assert.notCalled(spawn);
+    }, true);
+  });
+
+  it("release-react falls back to package.json when the app has no platform", (done: Mocha.Done): void => {
+    var command: cli.IReleaseReactCommand = {
+      type: cli.CommandType.releaseReact,
+      appName: "a",
+      appStoreVersion: null,
+      deploymentName: "Staging",
+      description: null,
+      mandatory: false,
+      rollout: null,
+      platform: "android",
+    };
+
+    executeIn(EXPO_PROJECT_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("This project uses expo-updates"), error.message);
+      sinon.assert.notCalled(spawn);
+    }, true);
+  });
+
+  it("detectProjectRuntime only answers when the dependencies are unambiguous", (): void => {
+    const dirs: string[] = [];
+    const projectWith = (dependencies: { [name: string]: string } | null): string => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-test-runtime-"));
+      dirs.push(dir);
+      if (dependencies) fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "p", dependencies }));
+      return dir;
+    };
+
+    assert.equal(detectProjectRuntime(projectWith({ "@code-push-next/react-native-code-push": "10.4.3" })), "codepush");
+    assert.equal(detectProjectRuntime(projectWith({ "expo-updates": "0.26.0" })), "expo-updates");
+    assert.equal(detectProjectRuntime(projectWith({ "expo-updates": "0.26.0", "react-native-code-push": "9.0.0" })), null);
+    assert.equal(detectProjectRuntime(projectWith({ "react-native": "0.76.5" })), null);
+    assert.equal(detectProjectRuntime(projectWith(null)), null);
+    dirs.forEach((dir: string) => fs.rmSync(dir, { recursive: true, force: true }));
+  });
+
 });
 
 describe("getiOSHermesEnabled", () => {

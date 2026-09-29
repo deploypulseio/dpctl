@@ -1,9 +1,11 @@
-// App platforms, and the guards that keep a release-react bundle going to the app it was built for.
+// Which update system an app uses: expo-v1 apps take `release-expo`, everything else `release-react`.
 // The server rejects a mismatch too, but only after a minute of bundling and without naming the right
 // command.
 
 import * as fs from "fs";
 import * as path from "path";
+
+export type OtaRuntime = "codepush" | "expo-updates";
 
 // Kept in step with the dashboard's platform.ts, so both name an app type the same way.
 const PLATFORM_LABELS: { [platform: string]: string } = {
@@ -19,11 +21,72 @@ export function appPlatformLabel(platform: string | null | undefined): string {
   return (platform && PLATFORM_LABELS[platform]) || "React Native";
 }
 
+export function runtimeForAppPlatform(platform: string | null | undefined): OtaRuntime | null {
+  if (!platform) return null;
+  return platform === "expo-v1" ? "expo-updates" : "codepush";
+}
+
+// Guess from package.json, for apps with no platform set. Null when it can't tell, so an unusual
+// project is never blocked on a guess. Any `*/react-native-code-push` counts: forks are common.
+export function detectProjectRuntime(projectRoot: string = process.cwd()): OtaRuntime | null {
+  let pkg: any;
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const deps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) });
+  const hasCodePush = deps.some((name: string) => name === "react-native-code-push" || name.endsWith("/react-native-code-push"));
+  const hasExpoUpdates = deps.includes("expo-updates");
+  if (hasCodePush === hasExpoUpdates) return null;
+  return hasCodePush ? "codepush" : "expo-updates";
+}
+
 const quoteArg = (value: string): string => (/\s/.test(value) ? `"${value}"` : value);
 
 function releaseReactHint(appName: string, deploymentName: string, appPlatform: string | null | undefined): string {
   const platform = appPlatform && /ios$/.test(appPlatform) ? "ios" : appPlatform && /android$/.test(appPlatform) ? "android" : "<ios|android>";
   return `dpctl release-react ${quoteArg(appName)} ${platform} -d ${quoteArg(deploymentName)}`;
+}
+
+function releaseExpoHint(appName: string, deploymentName: string): string {
+  return `dpctl release-expo ${quoteArg(appName)} -d ${quoteArg(deploymentName)}`;
+}
+
+// Throws, naming the command to run instead, when this is the wrong update system for the app. A
+// platform from the server decides; otherwise the project files do, and if they can't, nothing blocks.
+export function assertReleaseRuntime(opts: {
+  expected: OtaRuntime;
+  appName: string;
+  deploymentName: string;
+  appPlatform: string | null | undefined;
+  projectRoot?: string;
+}): void {
+  const { expected, appName, deploymentName, appPlatform } = opts;
+  const fromServer = runtimeForAppPlatform(appPlatform);
+  const actual = fromServer || detectProjectRuntime(opts.projectRoot);
+
+  if (expected === "codepush" && actual === "expo-updates") {
+    const why = fromServer
+      ? `"${appName}" is an Expo Updates app, so it can't take a CodePush release.`
+      : `This project uses expo-updates, not the CodePush SDK, so it can't take a CodePush release.`;
+    throw new Error(`${why} Run this instead:\n  ${releaseExpoHint(appName, deploymentName)}`);
+  }
+
+  if (expected === "expo-updates" && actual === "codepush") {
+    const why = fromServer
+      ? `"${appName}" is a CodePush app, so it can't take an Expo Updates release.`
+      : `This project uses the CodePush SDK, not expo-updates, so it can't take an Expo Updates release.`;
+    throw new Error(`${why} Run this instead:\n  ${releaseReactHint(appName, deploymentName, appPlatform)}`);
+  }
+
+  // Only expo-v1 apps take Expo releases, and a platform can't be changed after creation.
+  if (expected === "expo-updates" && appPlatform === null) {
+    throw new Error(
+      `"${appName}" isn't set up for Expo Updates, so the server would reject this release. ` +
+        `Expo Updates needs an app created for it:\n  dpctl app add <appName> --platform expo-v1`
+    );
+  }
 }
 
 /** "ios" or "android" for a CodePush app's platform; null for apps with no platform or no OS in it. */

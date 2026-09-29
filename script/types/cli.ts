@@ -37,6 +37,7 @@ export enum CommandType {
   patch,
   promote,
   release,
+  releaseExpo,
   releaseReact,
   rollback,
   sessionList,
@@ -207,6 +208,7 @@ export interface IPromoteCommand extends ICommand, IPackageInfo {
   sourceDeploymentName: string;
   destDeploymentName: string;
   noDuplicateReleaseError?: boolean;
+  platform?: string;
 }
 
 export interface IReleaseBaseCommand extends ICommand, IPackageInfo {
@@ -237,6 +239,17 @@ export interface IReleaseReactCommand extends IReleaseBaseCommand {
   podFile?: string;
 }
 
+export interface IReleaseExpoCommand extends ICommand {
+  appName: string;
+  deploymentName: string;
+  platform?: string;
+  runtimeVersion?: string;
+  exportDir?: string;
+  metadata?: string;
+  rollout?: number;
+  description?: string;
+}
+
 export interface IBundleReactCommand extends ICommand {
   platform: string;
   bundleName?: string;
@@ -255,6 +268,9 @@ export interface IRollbackCommand extends ICommand {
   appName: string;
   deploymentName: string;
   targetRelease: string;
+  platform?: string;
+  runtimeVersion?: string;
+  toEmbedded?: boolean;
 }
 
 export interface ISessionListCommand extends ICommand {

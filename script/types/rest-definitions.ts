@@ -115,8 +115,10 @@ export interface CollaboratorMap {
 /*inout*/
 export interface App {
   /*generated*/ id?: string;
-  // ios, android, expo-cng-ios or expo-cng-android. Unset on apps created before platforms existed.
+  // ios, android, expo-cng-ios, expo-cng-android or expo-v1. Unset on apps created before platforms existed.
   platform?: string | null;
+  /** Expo Updates apps only: the public ID that goes in `updates.url`. */
+  /*generated*/ expoProjectId?: string;
   /*generated*/ collaborators?: CollaboratorMap;
   /*key*/ name: string;
   /*generated*/ deployments?: string[];

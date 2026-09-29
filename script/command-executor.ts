@@ -7,12 +7,13 @@ import * as crypto from "crypto";
 import debugCommand from "./commands/debug";
 import * as fs from "fs";
 import * as hashUtils from "./hash-utils";
+import * as expoUtils from "./expo-utils";
 import * as recursiveFs from "recursive-fs";
 import * as yazl from "yazl";
 import slash = require("slash");
 import { envWithoutCredentials } from "./child-env";
 import { compileHermesIfEnabled } from "./react-native-utils";
-import { appPlatformLabel, assertReleasePlatform, checkReleaseProjectKind } from "./ota-runtime";
+import { appPlatformLabel, assertReleasePlatform, assertReleaseRuntime, checkReleaseProjectKind } from "./ota-runtime";
 import * as chalk from "chalk";
 const g2js = require("gradle-to-js/lib/parser");
 import * as moment from "moment";
@@ -260,6 +261,251 @@ function appRename(command: cli.IAppRenameCommand): Promise<void> {
 }
 
 /** Must match the base packageFileFromPath zips with, or the signature covers keys the package lacks. */
+/**
+ * The platform, for deciding WHICH implementation runs (CodePush or Expo Updates). Only a genuine 404
+ * is allowed to be inconclusive; anything else propagates. Swallowing a 500 here meant `dpctl rollback`
+ * on an Expo app ran the CodePush rollback and announced "MyApp is a CodePush app", mid-incident.
+ */
+function getAppPlatformForRouting(appName: string): Promise<string | null | undefined> {
+  return sdk.getApp(appName).then(
+    (app: App): string | null => (app && app.platform) || null,
+    (error: any): undefined => {
+      if (error && error.statusCode === AccountManager.ERROR_NOT_FOUND) return undefined;
+      throw error;
+    }
+  );
+}
+
+function uploadProgressBar(): (currentProgress: number) => void {
+  let lastTotalProgress = 0;
+  const progressBar = new progress("Upload progress:[:bar] :percent :etas", {
+    complete: "=",
+    incomplete: " ",
+    width: 50,
+    total: 100,
+  });
+  return (currentProgress: number): void => {
+    progressBar.tick(currentProgress - lastTotalProgress);
+    lastTotalProgress = currentProgress;
+  };
+}
+
+const EXPO_PLATFORM_LABELS: { [platform: string]: string } = { ios: "iOS", android: "Android" };
+
+// Copies what the source channel serves onto the destination. CodePush-only options are refused rather
+// than silently ignored: an Expo release has no mandatory flag or binary version.
+function promoteExpo(command: cli.IPromoteCommand): Promise<void> {
+  const unsupported: string[] = [];
+  if (command.label) unsupported.push("--label");
+  if (command.description) unsupported.push("--description");
+  if (command.mandatory !== null && command.mandatory !== undefined) unsupported.push("--mandatory");
+  if (command.disabled !== null && command.disabled !== undefined) unsupported.push("--disabled");
+  if (command.appStoreVersion) unsupported.push("--targetBinaryVersion");
+  if (unsupported.length) {
+    throw new Error(
+      `"${command.appName}" uses Expo Updates, where promote copies the releases a channel serves as they are. ` +
+        `Not supported: ${unsupported.join(", ")}.`
+    );
+  }
+
+  return Q(
+    (async () => {
+      const source: Deployment = await sdk.getDeployment(command.appName, command.sourceDeploymentName);
+      if (!source || !source.key) {
+        throw new Error(`Could not read the key of the "${command.sourceDeploymentName}" channel.`);
+      }
+      const result = await sdk.promoteExpo(source.key, command.destDeploymentName, {
+        platform: command.platform,
+        rollout: command.rollout,
+      });
+
+      result.promotions.forEach((entry) => {
+        const where = `${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion})`;
+        log(
+          `Promoted ${where}${entry.label ? ` as ${entry.label}` : ""} from "${command.sourceDeploymentName}" to ` +
+            `"${command.destDeploymentName}" on "${command.appName}".`
+        );
+      });
+      result.skipped.forEach((entry) => {
+        log(
+          chalk.yellow(
+            `Skipped ${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion}): ${entry.reason}.`
+          )
+        );
+      });
+      log("Devices pick this up on their next update check.");
+    })()
+  );
+}
+
+// Only the rollout can change. Expo releases have no label, mandatory flag or target binary version, so
+// those options are refused rather than silently ignored.
+function patchExpo(command: cli.IPatchCommand): Promise<void> {
+  const unsupported: string[] = [];
+  if (command.label) unsupported.push("--label");
+  if (command.description !== null && command.description !== undefined) unsupported.push("--description");
+  if (command.disabled !== null && command.disabled !== undefined) unsupported.push("--disabled");
+  if (command.mandatory !== null && command.mandatory !== undefined) unsupported.push("--mandatory");
+  if (command.appStoreVersion) unsupported.push("--targetBinaryVersion");
+  if (unsupported.length) {
+    throw new Error(`"${command.appName}" uses Expo Updates, where patch can only change --rollout. Not supported: ${unsupported.join(", ")}.`);
+  }
+  if (!command.rollout) {
+    throw new Error("Specify the new percentage with --rollout, e.g. --rollout 50%.");
+  }
+
+  return Q(
+    (async () => {
+      const deployment: Deployment = await sdk.getDeployment(command.appName, command.deploymentName);
+      if (!deployment || !deployment.key) {
+        throw new Error(`Could not read the key of the "${command.deploymentName}" channel.`);
+      }
+      const releases = await sdk.patchExpoRollout(deployment.key, command.rollout);
+      const what = releases.map((r) => `${EXPO_PLATFORM_LABELS[r.platform] ?? r.platform} (runtime version ${r.runtimeVersion})`).join(", ");
+      const reach = command.rollout === 100 ? "every device" : `${command.rollout}% of devices`;
+      log(`Successfully rolled out ${what} on the "${command.deploymentName}" channel of "${command.appName}" to ${reach}.`);
+    })()
+  );
+}
+
+// A channel serves one release per platform AND runtime version, so this rolls back each unless narrowed.
+// The previous release is published again rather than the bad one disabled, because expo-updates only loads
+// an update NEWER than the one it launched. --toEmbedded goes back to the bundle in the store binary.
+function rollbackExpo(command: cli.IRollbackCommand): Promise<void> {
+  if (command.targetRelease) {
+    throw new Error(
+      `"${command.appName}" uses Expo Updates, where releases have no labels, so --targetRelease does not apply. ` +
+        `Roll back to the previous release with:\n  dpctl rollback ${command.appName} ${command.deploymentName}`
+    );
+  }
+
+  const what = command.toEmbedded ? "the bundle built into the store binary" : "the previous release";
+  const scope = [
+    command.platform ? EXPO_PLATFORM_LABELS[command.platform] ?? command.platform : null,
+    command.runtimeVersion ? `runtime version ${command.runtimeVersion}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return confirm(
+    `Roll the "${command.deploymentName}" channel of "${command.appName}"${scope ? ` (${scope})` : ""} back to ${what}?`
+  ).then((wasConfirmed: boolean) => {
+    if (!wasConfirmed) {
+      log("Rollback cancelled.");
+      return;
+    }
+
+    return Q(
+      (async () => {
+        const deployment: Deployment = await sdk.getDeployment(command.appName, command.deploymentName);
+        if (!deployment || !deployment.key) {
+          throw new Error(`Could not read the key of the "${command.deploymentName}" channel.`);
+        }
+        const result = await sdk.rollbackExpo(deployment.key, {
+          platform: command.platform,
+          runtimeVersion: command.runtimeVersion,
+          toEmbedded: command.toEmbedded,
+        });
+
+        result.rollbacks.forEach((entry) => {
+          const where = `${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion})`;
+          const how = entry.mode === "embedded" ? "back to the embedded bundle" : "back to the previous release";
+          log(`Rolled ${where} ${how} on the "${command.deploymentName}" channel of "${command.appName}".`);
+        });
+        result.skipped.forEach((entry) => {
+          log(
+            chalk.yellow(
+              `Skipped ${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion}): ${entry.reason}.`
+            )
+          );
+        });
+        log("Devices pick this up on their next update check.");
+      })()
+    );
+  });
+}
+
+export const releaseExpo = (command: cli.IReleaseExpoCommand): Promise<void> => {
+  const projectRoot = process.cwd();
+  const platforms: string[] = command.platform ? [command.platform] : ["ios", "android"];
+  const metadata: object | undefined = command.metadata ? JSON.parse(command.metadata) : undefined;
+
+  const run = async () => {
+    const deployment: Deployment = await sdk.getDeployment(command.appName, command.deploymentName);
+    if (!deployment || !deployment.key) {
+      throw new Error(`Could not read the key of the "${command.deploymentName}" deployment, which Expo Updates releases are uploaded to.`);
+    }
+
+    assertReleaseRuntime({
+      expected: "expo-updates",
+      appName: command.appName,
+      deploymentName: command.deploymentName,
+      appPlatform: await getAppPlatform(command.appName),
+      projectRoot,
+    });
+
+    // Exporting and resolving runtime versions both read the project; only a prebuilt export with
+    // an explicit runtime version can be released from anywhere.
+    if (!command.exportDir || !command.runtimeVersion) {
+      expoUtils.assertExpoProject(projectRoot);
+    }
+
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-expo-"));
+    try {
+      const exportDir = command.exportDir ? path.resolve(command.exportDir) : path.join(workDir, "dist");
+      if (!command.exportDir) {
+        const labels = platforms.map((platform: string) => EXPO_PLATFORM_LABELS[platform]);
+        log(chalk.cyan(`Exporting ${labels.join(" and ")} with "npx expo export":\n`));
+        await expoUtils.runExpoExport(projectRoot, exportDir, platforms);
+      }
+      const exportMetadata = expoUtils.readExportMetadata(exportDir);
+
+      // Resolve and package every platform before uploading any, so a problem with the second one
+      // can't leave the first released on its own.
+      const prepared: Array<{ platform: string; runtimeVersion: string; zip: expoUtils.PlatformZip }> = [];
+      for (const platform of platforms) {
+        const runtimeVersion = command.runtimeVersion || (await expoUtils.resolveRuntimeVersion(projectRoot, platform));
+        const zip = await expoUtils.zipPlatformExport(exportDir, exportMetadata, platform, path.join(workDir, `${platform}.zip`));
+        prepared.push({ platform, runtimeVersion, zip });
+      }
+
+      const released: string[] = [];
+      for (const { platform, runtimeVersion, zip } of prepared) {
+        const label = EXPO_PLATFORM_LABELS[platform];
+        log(
+          chalk.cyan(
+            `\nReleasing ${label} (runtime version ${runtimeVersion}, ${zip.assetCount} asset(s)) ` +
+              `to the "${command.deploymentName}" deployment of "${command.appName}":\n`
+          )
+        );
+        try {
+          await sdk.releaseExpo(deployment.key, zip.zipPath, platform, runtimeVersion, metadata, command.rollout, command.description, uploadProgressBar());
+        } catch (error: any) {
+          if (released.length && error) {
+            error.message = `${released.join(" and ")} was released, but ${label} failed: ${error.message}`;
+          }
+          throw error;
+        }
+        released.push(label);
+      }
+
+      const reach = command.rollout && command.rollout < 100 ? ` for ${command.rollout}% of devices` : "";
+      log(`Successfully released ${released.join(" and ")} to the "${command.deploymentName}" deployment of the "${command.appName}" app${reach}.`);
+    } finally {
+      // Only the temporary folder: an --exportDir the user passed is never inside it. Swallowed, because
+      // a rejection here would REPLACE the in-flight error, and "EBUSY android.zip" is a poor substitute
+      // for "iOS was released, but Android failed: <reason>".
+      try {
+        await rimraf(workDir);
+      } catch {
+        /* best effort */
+      }
+    }
+  };
+
+  return Q(run());
+};
+
 export function signatureManifestBase(filePath: string): string {
   return path.dirname(filePath);
 }
@@ -671,6 +917,9 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.release:
         return release(<cli.IReleaseCommand>command);
+
+      case cli.CommandType.releaseExpo:
+        return releaseExpo(<cli.IReleaseExpoCommand>command);
 
       case cli.CommandType.releaseReact:
         return releaseReact(<cli.IReleaseReactCommand>command);
@@ -1246,6 +1495,10 @@ function printTable(columnNames: string[], readData: (dataSource: any[]) => void
 }
 
 function promote(command: cli.IPromoteCommand): Promise<void> {
+  return getAppPlatformForRouting(command.appName).then((platform) => (platform === "expo-v1" ? promoteExpo(command) : promoteCodePush(command)));
+}
+
+function promoteCodePush(command: cli.IPromoteCommand): Promise<void> {
   const packageInfo: PackageInfo = {
     appVersion: command.appStoreVersion,
     description: command.description,
@@ -1274,6 +1527,10 @@ function promote(command: cli.IPromoteCommand): Promise<void> {
 }
 
 function patch(command: cli.IPatchCommand): Promise<void> {
+  return getAppPlatformForRouting(command.appName).then((platform) => (platform === "expo-v1" ? patchExpo(command) : patchCodePush(command)));
+}
+
+function patchCodePush(command: cli.IPatchCommand): Promise<void> {
   const packageInfo: PackageInfo = {
     appVersion: command.appStoreVersion,
     description: command.description,
@@ -1382,6 +1639,7 @@ export const releaseReact = (command: cli.IReleaseReactCommand): Promise<void> =
       .getDeployment(command.appName, command.deploymentName)
       .then(() => getAppPlatform(command.appName))
       .then((appPlatform: string | null | undefined): any => {
+        assertReleaseRuntime({ expected: "codepush", appName: command.appName, deploymentName: command.deploymentName, appPlatform });
         assertReleasePlatform({ appName: command.appName, deploymentName: command.deploymentName, appPlatform, releasePlatform: platform });
         const projectWarning = checkReleaseProjectKind({ appName: command.appName, appPlatform, projectRoot: process.cwd() });
         if (projectWarning) console.warn(chalk.yellow("[Warning] " + projectWarning));
@@ -1602,6 +1860,21 @@ export const bundleReact = (command: cli.IBundleReactCommand): Promise<void> => 
 };
 
 function rollback(command: cli.IRollbackCommand): Promise<void> {
+  return getAppPlatformForRouting(command.appName).then((platform) => (platform === "expo-v1" ? rollbackExpo(command) : rollbackCodePush(command)));
+}
+
+function rollbackCodePush(command: cli.IRollbackCommand): Promise<void> {
+  const expoOnly: string[] = [];
+  if (command.platform) expoOnly.push("--platform");
+  if (command.runtimeVersion) expoOnly.push("--runtimeVersion");
+  if (command.toEmbedded) expoOnly.push("--toEmbedded");
+  if (expoOnly.length) {
+    throw new Error(
+      `${expoOnly.join(" and ")} only appl${expoOnly.length > 1 ? "y" : "ies"} to Expo Updates apps, and ` +
+        `"${command.appName}" is a CodePush app. Roll back to an earlier release with --targetRelease instead.`
+    );
+  }
+
   return confirm().then((wasConfirmed: boolean) => {
     if (!wasConfirmed) {
       log("Rollback cancelled.");
