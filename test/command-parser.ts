@@ -43,6 +43,20 @@ function run(...args: string[]): Run {
   return { status: result.status, stdout, stderr, output: stdout + stderr };
 }
 
+// Parses args and returns the command object, without running it. A fresh process per call, because
+// yargs keeps module state between parses.
+function parse(...args: string[]): any {
+  const script = 'const p = require(process.argv[1]); console.log("CMD:" + JSON.stringify(p.createCommand()));';
+  const parserPath = path.join(__dirname, "..", "script", "command-parser.ts");
+  const result = spawnSync(process.execPath, ["-r", "ts-node/register", "-e", script, parserPath, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: sandboxHome, TS_NODE_TRANSPILE_ONLY: "1", FORCE_COLOR: "0" },
+  });
+  const line = (result.stdout || "").split("\n").find((l: string) => l.startsWith("CMD:"));
+  assert.ok(line, `no command parsed: ${(result.stdout || "") + (result.stderr || "")}`.slice(0, 400));
+  return JSON.parse(line.slice("CMD:".length));
+}
+
 describe("command line", function () {
   // Each run boots ts-node, so this suite is seconds rather than milliseconds.
   this.timeout(60000);
@@ -149,6 +163,38 @@ describe("command line", function () {
     const result = run("rollback", "myapp", "Production", "--platform", "ios", "--runtimeVersion", "1.0.0", "--toEmbedded");
     assert.ok(!UNKNOWN_ARGUMENT.test(result.output), result.output.slice(0, 300));
     assert.ok(NOT_LOGGED_IN.test(result.output), result.output.slice(0, 300));
+  });
+
+  // ---------------------------------------------------------------------------
+  // Two checks that reject at parse time, before anything is sent.
+  // ---------------------------------------------------------------------------
+
+  it("deployment errors rejects a --limit below 1", () => {
+    const result = run("deployment", "errors", "myapp", "Production", "--limit", "0");
+    assert.notStrictEqual(result.status, 0);
+    assert.ok(/--limit must be a whole number of 1 or more/.test(result.output), result.output.slice(0, 300));
+  });
+
+  it("webhook update rejects --enabled and --disabled together", () => {
+    const result = run("webhook", "update", "abc-123", "--enabled", "--disabled");
+    assert.notStrictEqual(result.status, 0);
+    assert.ok(/Pass --enabled or --disabled, not both/.test(result.output), result.output.slice(0, 300));
+  });
+
+  it("webhook update takes either flag on its own", () => {
+    ["--enabled", "--disabled", "--no-enabled"].forEach((flag: string) => {
+      const result = run("webhook", "update", "abc-123", flag);
+      assert.ok(!UNKNOWN_ARGUMENT.test(result.output), `${flag}: ${result.output.slice(0, 300)}`);
+      assert.ok(NOT_LOGGED_IN.test(result.output), `${flag}: ${result.output.slice(0, 300)}`);
+    });
+  });
+
+  it("webhook update maps --disabled to enabled: false", () => {
+    assert.strictEqual(parse("webhook", "update", "abc-123", "--disabled").enabled, false);
+    assert.strictEqual(parse("webhook", "update", "abc-123", "--enabled").enabled, true);
+    assert.strictEqual(parse("webhook", "update", "abc-123", "--no-enabled").enabled, false);
+    // Neither flag given is not the same as disabling it.
+    assert.strictEqual(parse("webhook", "update", "abc-123", "--name", "x").enabled, null);
   });
 
   it("each command is registered once", () => {

@@ -23,6 +23,7 @@ export enum CommandType {
   deploymentAutoRollbackDisable,
   deploymentAutoRollbackEnable,
   deploymentAutoRollbackGet,
+  deploymentErrors,
   deploymentHistory,
   deploymentHistoryClear,
   deploymentList,
@@ -42,6 +43,10 @@ export enum CommandType {
   rollback,
   sessionList,
   sessionRemove,
+  webhookAdd,
+  webhookList,
+  webhookRemove,
+  webhookUpdate,
   whoami,
 }
 
@@ -55,6 +60,13 @@ export interface IAccessKeyAddCommand extends ICommand {
   ttl?: number;
   scopes?: string[];
   appNames?: string[];
+}
+
+export interface IDeploymentErrorsCommand extends ICommand {
+  appName: string;
+  deploymentName: string;
+  format: string;
+  limit: number;
 }
 
 export interface IAccessKeyPatchCommand extends ICommand {
@@ -279,6 +291,31 @@ export interface ISessionListCommand extends ICommand {
 
 export interface ISessionRemoveCommand extends ICommand {
   machineName: string;
+}
+
+export interface IWebhookListCommand extends ICommand {
+  format: string;
+}
+
+export interface IWebhookAddCommand extends ICommand {
+  url: string;
+  name?: string;
+  events?: string;
+  secret?: string;
+  disabled?: boolean;
+}
+
+export interface IWebhookUpdateCommand extends ICommand {
+  id: string;
+  url?: string;
+  name?: string;
+  events?: string;
+  secret?: string;
+  enabled?: boolean;
+}
+
+export interface IWebhookRemoveCommand extends ICommand {
+  id: string;
 }
 
 export type ReleaseHook = (

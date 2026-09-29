@@ -20,6 +20,8 @@ import {
   CodePushError,
   CollaboratorMap,
   Deployment,
+  DeploymentError,
+  DeploymentErrorsResult,
   DeploymentMetrics,
   Headers,
   Org,
@@ -311,6 +313,50 @@ class AccountManager {
       });
     });
   }
+  public getDeploymentErrors(appName: string, deploymentName: string): Promise<DeploymentErrorsResult> {
+    const PAGE_SIZE = 200;
+    const MAX_PAGES = 50;
+    const entries: DeploymentError[] = [];
+
+    const fetchPage = (page: number): Promise<DeploymentErrorsResult> =>
+      this.get(`/logs/errors?appId=${encodeURIComponent(appName)}&page=${page}&limit=${PAGE_SIZE}`).then(
+        (res: JsonResponse): DeploymentErrorsResult | Promise<DeploymentErrorsResult> => {
+          const body = res.body || {};
+          (body.entries || []).forEach((entry: DeploymentError) => {
+            if (entry.deploymentName === deploymentName) entries.push(entry);
+          });
+          const pages = Number(body.pages) || 1;
+          if (page < pages && page < MAX_PAGES) return fetchPage(page + 1);
+          return { entries, truncated: page < pages };
+        }
+      );
+
+    return fetchPage(1);
+  }
+
+  public getWebhooks(): Promise<any[]> {
+    return this.get(urlEncode(["/webhooks"])).then((res: JsonResponse) => res.body.webhooks);
+  }
+
+  public addWebhook(url: string, name?: string, events?: string[], secret?: string, enabled?: boolean): Promise<any> {
+    const body: Record<string, any> = { url };
+    if (name) body.name = name;
+    if (events) body.events = events;
+    if (secret) body.secret = secret;
+    if (enabled !== undefined) body.enabled = enabled;
+    return this.post(urlEncode(["/webhooks"]), JSON.stringify(body), /*expectResponseBody=*/ true).then(
+      (res: JsonResponse) => res.body.webhook
+    );
+  }
+
+  public updateWebhook(id: string, updates: Record<string, any>): Promise<void> {
+    return this.patch(urlEncode([`/webhooks/${id}`]), JSON.stringify(updates), /*expectResponseBody=*/ false).then(() => null);
+  }
+
+  public removeWebhook(id: string): Promise<void> {
+    return this.del(urlEncode([`/webhooks/${id}`])).then(() => null);
+  }
+
   public getAccessKeys(): Promise<AccessKey[]> {
     return this.get(urlEncode(["/accessKeys"])).then((res: JsonResponse) => {
       const accessKeys: AccessKey[] = [];

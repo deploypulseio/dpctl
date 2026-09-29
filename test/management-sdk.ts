@@ -443,6 +443,34 @@ describe("Management SDK", () => {
   // The Expo routes are addressed by deployment key rather than app and deployment name, and they build
   // their requests directly instead of going through get/post, so what they send is worth pinning down.
 
+  // The failure-report route is account-wide and paged, so the SDK walks the pages and keeps only the
+  // deployment that was asked for.
+
+  it("getDeploymentErrors follows the pages and keeps one deployment", (done: Mocha.Done) => {
+    const requested = mockPages([
+      { pages: 2, entries: [{ deploymentName: "Production", label: "v1" }, { deploymentName: "Staging", label: "v9" }] },
+      { pages: 2, entries: [{ deploymentName: "Production", label: "v2" }] },
+    ]);
+    manager.getDeploymentErrors("MyApp", "Production").then((result) => {
+      assert.deepStrictEqual(result.entries.map((entry) => entry.label), ["v1", "v2"]);
+      assert.strictEqual(result.truncated, false);
+      assert.deepStrictEqual(requested.map((url) => /[?&]page=(\d+)/.exec(url)[1]), ["1", "2"]);
+      assert.ok(requested[0].indexOf("appId=MyApp") >= 0, requested[0]);
+      done();
+    }, rejectHandler);
+  });
+
+  it("getDeploymentErrors says when there are more pages than it will read", (done: Mocha.Done) => {
+    const requested = mockPages(
+      Array.from({ length: 51 }, (unused, index) => ({ pages: 99, entries: [{ deploymentName: "Production", label: `v${index}` }] }))
+    );
+    manager.getDeploymentErrors("MyApp", "Production").then((result) => {
+      assert.strictEqual(requested.length, 50, "should stop after 50 pages");
+      assert.strictEqual(result.truncated, true);
+      done();
+    }, rejectHandler);
+  });
+
   it("the Expo routes live under /expo/v1 and are addressed by deployment key", (done: Mocha.Done) => {
     mockReturn(JSON.stringify({ releases: [] }), 200);
     manager.patchExpoRollout("key with spaces", 25).then(() => {
@@ -499,6 +527,25 @@ function rejectHandler(val: any): void {
 let lastRequestBody: any;
 let lastRequestHeaders: any;
 let lastRequestUrl: string;
+
+function mockPages(pageBodies: any[]): string[] {
+  const requested: string[] = [];
+  lastRequestBody = undefined;
+  require("superagent-mock")(request, [
+    {
+      pattern: "https://api.deploypulse.io/(.*)",
+      fixtures: function (match: any): any {
+        requested.push(match[0]);
+        const page = Number(/[?&]page=(\d+)/.exec(match[0])?.[1] || 1);
+        return { text: JSON.stringify(pageBodies[page - 1]), status: 200, ok: true, header: {}, headers: {} };
+      },
+      callback: function (match: any, data: any): any {
+        return data;
+      },
+    },
+  ]);
+  return requested;
+}
 
 function mockReturn(bodyText: string, statusCode: number, header = {}, throwOnError = true): void {
   lastRequestBody = undefined;
