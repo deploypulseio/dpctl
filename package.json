@@ -1,6 +1,6 @@
 {
   "name": "@deploypulseio/dpctl",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Management CLI for the DeployPulse CodePush service",
   "keywords": [
     "deploypulse",
