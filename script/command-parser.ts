@@ -22,6 +22,13 @@ let lastFailMessage: string | undefined;
 let wasHelpShown = false;
 
 /** True when yargs already printed why the arguments were rejected, so callers need not add their own. */
+// yargs stringifies a .check callback that returns false, so its message is the source of
+// `(argv) => isValidCommand`. The check is still doing its job (help, exit 1); only its wording is
+// useless, and a real complaint about the same input is reported alongside it.
+function isCheckFailure(msg: string): boolean {
+  return msg.startsWith("Argument check failed:");
+}
+
 export function failureReported(): boolean {
   return !!lastFailMessage;
 }
@@ -161,7 +168,7 @@ function addCommonConfiguration(yargs: yargs.Argv): void {
     .fail((msg: string) => {
       // yargs runs this handler once per nesting level (root, category, subcommand, ...), so the
       // same message arrives several times for a single mistake. Print each one once.
-      if (msg && msg !== lastFailMessage) {
+      if (msg && msg !== lastFailMessage && !isCheckFailure(msg)) {
         lastFailMessage = msg;
         console.error(chalk.red(`[Error]  ${msg}`));
       }
@@ -1392,7 +1399,7 @@ yargs
     // A bare `dpctl` also lands here (yargs demands a command), and that is not a mistake to report: it
     // gets the greeting. Anything else typed something wrong and wants the reason, not the banner.
     const typedSomething = process.argv.slice(2).length > 0;
-    if (typedSomething && msg && msg !== lastFailMessage) {
+    if (typedSomething && msg && msg !== lastFailMessage && !isCheckFailure(msg)) {
       lastFailMessage = msg;
       console.error(chalk.red(`[Error]  ${msg}`));
     }

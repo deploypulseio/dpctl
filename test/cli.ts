@@ -694,14 +694,53 @@ describe("CLI", () => {
     var command: cli.IDeploymentErrorsCommand = {
       type: cli.CommandType.deploymentErrors,
       appName: "a",
-      deploymentName: "Nope",
+      deploymentName: "Production",
       format: "table",
       limit: 50,
     };
+    sandbox.stub(cmdexec.sdk, "getDeploymentErrors").callsFake(() => Q({ entries: [], truncated: false }));
 
     cmdexec.execute(command).done((): void => {
       sinon.assert.calledOnce(log);
       assert.ok(String(log.args[0][0]).startsWith("No failed updates have been reported"));
+      done();
+    });
+  });
+
+  it("deploymentErrors tells a mistyped name apart from a clean deployment", (done: Mocha.Done): void => {
+    // The reports route answers an unknown app with an empty list, so without a check a typo reads as
+    // an all-clear, which is the wrong answer to give a CI job asking whether a release is failing.
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "NoSuchDeployment",
+      format: "table",
+      limit: 50,
+    };
+    sandbox.stub(cmdexec.sdk, "getDeploymentErrors").callsFake(() => Q({ entries: [], truncated: false }));
+
+    cmdexec.execute(command).done(
+      (): void => done(new Error("Should have rejected")),
+      (error: any): void => {
+        assert.ok(/no "NoSuchDeployment" deployment of an app named "a"/.test(error.message), error.message);
+        sinon.assert.notCalled(log);
+        done();
+      }
+    );
+  });
+
+  it("deploymentErrors does not pay for the check when there are failures to show", (done: Mocha.Done): void => {
+    var command: cli.IDeploymentErrorsCommand = {
+      type: cli.CommandType.deploymentErrors,
+      appName: "a",
+      deploymentName: "Production",
+      format: "json",
+      limit: 50,
+    };
+    var getDeployment: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "getDeployment");
+
+    cmdexec.execute(command).done((): void => {
+      sinon.assert.notCalled(getDeployment);
       done();
     });
   });

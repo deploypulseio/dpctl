@@ -5,6 +5,7 @@ import * as assert from "assert";
 import * as Q from "q";
 
 import AccountManager = require("../script/management-sdk");
+import { messageFromResponseText } from "../script/api-errors";
 
 var request = require("superagent");
 
@@ -418,6 +419,55 @@ describe("Management SDK", () => {
         done();
       }, rejectHandler);
     }, rejectHandler);
+  });
+
+  it("unwraps the API's error envelope, and leaves anything else alone", () => {
+    assert.strictEqual(messageFromResponseText('{"message":"This access key is read-only."}'), "This access key is read-only.");
+    assert.strictEqual(messageFromResponseText("upstream connect error"), "upstream connect error");
+    // Shapes that are JSON but carry no usable message stay as they were, rather than becoming
+    // "undefined" or an empty error.
+    assert.strictEqual(messageFromResponseText('{"error":"nope"}'), '{"error":"nope"}');
+    assert.strictEqual(messageFromResponseText('{"message":""}'), '{"message":""}');
+    assert.strictEqual(messageFromResponseText('{"message":123}'), '{"message":123}');
+    assert.strictEqual(messageFromResponseText(""), "");
+  });
+
+  it("unwraps the envelope on the branch a real 4xx takes", () => {
+    // superagent reports a 4xx as an error, so production rejects through getCodePushError, not
+    // through the body-parsing branch below. superagent-mock cannot produce that combination (an
+    // error AND a response body), so this reaches the method directly.
+    const error: any = new Error("Forbidden");
+    const response: any = { status: 403, text: '{"message":"This access key is read-only."}' };
+    const built = (manager as any).getCodePushError(error, response);
+    assert.strictEqual(built.message, "This access key is read-only.");
+    assert.strictEqual(built.statusCode, 403);
+
+    // No body at all: the transport error is still what gets reported.
+    const offline: any = new Error("connect ECONNREFUSED");
+    assert.strictEqual((manager as any).getCodePushError(offline, undefined).message, "connect ECONNREFUSED");
+  });
+
+  it("reports the server's message, not the JSON envelope it arrived in", (done: Mocha.Done) => {
+    mockReturn(JSON.stringify({ message: "This access key is read-only." }), 403, {}, /*throwOnError=*/ false);
+    manager.addApp("MyApp").then(
+      () => done(new Error("Should have rejected")),
+      (error: any) => {
+        assert.strictEqual(error.message, "This access key is read-only.");
+        assert.strictEqual(error.statusCode, 403);
+        done();
+      }
+    );
+  });
+
+  it("passes a non-JSON error body through untouched", (done: Mocha.Done) => {
+    mockReturn("upstream connect error", 502, {}, /*throwOnError=*/ false);
+    manager.addApp("MyApp").then(
+      () => done(new Error("Should have rejected")),
+      (error: any) => {
+        assert.strictEqual(error.message, "upstream connect error");
+        done();
+      }
+    );
   });
 
   it("identifies itself as dpctl, so a login is not a nameless CLI row", (done: Mocha.Done) => {

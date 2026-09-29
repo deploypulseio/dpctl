@@ -197,6 +197,16 @@ describe("command line", function () {
     assert.strictEqual(parse("webhook", "update", "abc-123", "--name", "x").enabled, null);
   });
 
+  it("a bare command category reports one error, not the source of a check callback", () => {
+    ["org", "app", "webhook", "deployment", "access-key"].forEach((category: string) => {
+      const result = run(category);
+      const errors = result.output.split("\n").filter((line: string) => line.indexOf("[Error]") >= 0);
+      assert.strictEqual(errors.length, 1, `${category} printed ${errors.length} errors:\n${errors.join("\n")}`);
+      assert.ok(!/Argument check failed/.test(result.output), `${category} leaked the check callback`);
+      assert.strictEqual(result.status, 1, `${category} should still exit 1`);
+    });
+  });
+
   it("each command is registered once", () => {
     // A command registered twice silently wins with its last builder, so its newest options vanish
     // from the parse while still showing up in the source.
