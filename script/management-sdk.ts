@@ -47,17 +47,52 @@ interface PackageFile {
   path: string;
 }
 
-// A template string tag function that URL encodes the substituted values
-function urlEncode(strings: string[], ...values: string[]): string {
+// Template tag that encodes each value as a single path segment. Refuses "." and ".." since URL parsing
+// collapses them, even percent-encoded.
+function urlEncode(strings: TemplateStringsArray, ...values: unknown[]): string {
   let result = "";
   for (let i = 0; i < strings.length; i++) {
     result += strings[i];
     if (i < values.length) {
-      result += encodeURIComponent(values[i]);
+      const value = String(values[i]);
+      if (isDotSegment(value)) {
+        throw new Error(
+          `The name "${value}" cannot be used in a request URL, so dpctl cannot address it. Contact support@deploypulse.io to rename or remove it.`
+        );
+      }
+      result += encodeURIComponent(value);
     }
   }
 
   return result;
+}
+
+// Best-effort delete of a temporary package file.
+function removeQuietly(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (e) {}
+}
+
+// Expo release retries while the server is busy: up to 5 minutes in total, with up to 20% jitter per wait.
+const EXPO_BUSY_BUDGET_MS = 5 * 60 * 1000;
+const EXPO_BUSY_BACKOFF_MS = [2_000, 4_000, 8_000, 15_000, 30_000];
+const EXPO_BUSY_GIVE_UP_MESSAGE = "Server busy, try again later.";
+
+/** Retry-After in milliseconds: delay-seconds or an HTTP date. Null when absent or unreadable. */
+function retryAfterMs(value: unknown, now: number): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  if (/^\d+$/.test(value.trim())) return parseInt(value.trim(), 10) * 1000;
+  const date = Date.parse(value);
+  return isNaN(date) ? null : Math.max(0, date - now);
+}
+
+function isDotSegment(value: string): boolean {
+  const candidates = [value.trim()];
+  try {
+    candidates.push(decodeURIComponent(value).trim());
+  } catch (e) {}
+  return candidates.some((candidate) => candidate === "." || candidate === "..");
 }
 
 class AccountManager {
@@ -66,6 +101,7 @@ class AccountManager {
     COLLABORATOR: "Collaborator",
   };
   public static SERVER_URL = "https://api.deploypulse.io";
+  public static EXPO_BUSY_GIVE_UP_MESSAGE = EXPO_BUSY_GIVE_UP_MESSAGE;
 
   private static API_VERSION: number = 2;
 
@@ -77,6 +113,11 @@ class AccountManager {
 
   private _accessKey: string;
   private _orgId: string | null = null;
+  // Swapped out in tests.
+  private _clock = {
+    now: (): number => Date.now(),
+    sleep: (ms: number): Promise<void> => Promise<void>((resolve) => setTimeout(() => resolve(null), ms)),
+  };
   private _serverUrl: string;
   private _customHeaders: Headers;
 
@@ -98,10 +139,12 @@ class AccountManager {
     return this._accessKey;
   }
 
-  public isAuthenticated(throwIfUnauthorized?: boolean): Promise<boolean> {
+  // isLogin sends X-DeployPulse-Login: 1 so the API records the login. Other calls send 0.
+  public isAuthenticated(throwIfUnauthorized?: boolean, isLogin?: boolean): Promise<boolean> {
     return Promise<any>((resolve, reject, notify) => {
-      const request: superagent.Request<any> = superagent.get(`${this._serverUrl}${urlEncode(["/authenticated"])}`);
+      const request: superagent.Request<any> = superagent.get(`${this._serverUrl}${urlEncode`/authenticated`}`);
       this.attachCredentials(request);
+      request.set("X-DeployPulse-Login", isLogin ? "1" : "0");
 
       request.end((err: any, res: superagent.Response) => {
         const status: number = this.getErrorStatus(err, res);
@@ -136,7 +179,7 @@ class AccountManager {
     if (scopes && scopes.length) accessKeyRequest.scopes = scopes;
     if (appIds && appIds.length) accessKeyRequest.appIds = appIds;
 
-    return this.post(urlEncode(["/accessKeys/"]), JSON.stringify(accessKeyRequest), /*expectResponseBody=*/ true).then(
+    return this.post(urlEncode`/accessKeys/`, JSON.stringify(accessKeyRequest), /*expectResponseBody=*/ true).then(
       (response: JsonResponse) => {
         return {
           createdTime: response.body.accessKey.createdTime,
@@ -149,7 +192,7 @@ class AccountManager {
   }
 
   public getAccessKey(accessKeyName: string): Promise<AccessKey> {
-    return this.get(urlEncode([`/accessKeys/${accessKeyName}`])).then((res: JsonResponse) => {
+    return this.get(urlEncode`/accessKeys/${accessKeyName}`).then((res: JsonResponse) => {
       return {
         createdTime: res.body.accessKey.createdTime,
         expires: res.body.accessKey.expires,
@@ -164,11 +207,14 @@ class AccountManager {
   }
 
   public getOrgs(): Promise<Org[]> {
-    return this.get(urlEncode(["/orgs"])).then((res: JsonResponse) => res.body.orgs as Org[]);
+    return this.get(urlEncode`/orgs`).then((res: JsonResponse) => res.body.orgs as Org[]);
   }
 
   // The Expo release endpoint sits beside the manifest routes, not under /apps, and is addressed by
   // deployment key, so callers look the key up first.
+  //
+  // Retries a busy server (503, or 429 with Retry-After) for up to EXPO_BUSY_BUDGET_MS. Resending is safe:
+  // a busy response means nothing was released.
   public releaseExpo(
     deploymentKey: string,
     zipFilePath: string,
@@ -177,9 +223,40 @@ class AccountManager {
     metadata?: object,
     rollout?: number,
     description?: string,
-    uploadProgressCallback?: (progress: number) => void
+    uploadProgressCallback?: (progress: number) => void,
+    appConfig?: object,
+    onBusy?: (waitMs: number) => void
   ): Promise<void> {
-    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/release`;
+    const started = this._clock.now();
+    const attempt = (tries: number): Promise<void> =>
+      this.releaseExpoOnce(deploymentKey, zipFilePath, platform, runtimeVersion, metadata, rollout, description, uploadProgressCallback, appConfig).then(
+        (busy: ExpoBusy | null): Promise<void> => {
+          if (!busy) return Q<void>(null);
+          const backoff = EXPO_BUSY_BACKOFF_MS[Math.min(tries, EXPO_BUSY_BACKOFF_MS.length - 1)];
+          const waitMs = busy.retryAfterMs ?? Math.round(backoff * (1 + Math.random() / 5));
+          if (this._clock.now() + waitMs - started > EXPO_BUSY_BUDGET_MS) {
+            throw <CodePushError>{ message: EXPO_BUSY_GIVE_UP_MESSAGE, statusCode: busy.statusCode };
+          }
+          if (onBusy) onBusy(waitMs);
+          return this._clock.sleep(waitMs).then(() => attempt(tries + 1));
+        }
+      );
+    return attempt(0);
+  }
+
+  /** One upload. Resolves null once released, or with how long to wait when the server is busy. */
+  private releaseExpoOnce(
+    deploymentKey: string,
+    zipFilePath: string,
+    platform: string,
+    runtimeVersion: string,
+    metadata?: object,
+    rollout?: number,
+    description?: string,
+    uploadProgressCallback?: (progress: number) => void,
+    appConfig?: object
+  ): Promise<ExpoBusy | null> {
+    const url = this._serverUrl + urlEncode`/expo/v1/${deploymentKey}/release`;
     const releaseInfo = JSON.stringify({
       platform,
       runtimeVersion,
@@ -188,11 +265,13 @@ class AccountManager {
       ...(description ? { description } : {}),
     });
 
-    return Promise<void>((resolve, reject) => {
+    return Promise<ExpoBusy | null>((resolve, reject) => {
       const request: superagent.Request<any> = superagent
         .post(url)
         .attach("bundle", fs.createReadStream(zipFilePath), "bundle.zip")
         .field("releaseInfo", releaseInfo);
+      // Served to devices as extra.expoClient (Constants.expoConfig). Older APIs ignore it.
+      if (appConfig) request.field("appConfig", JSON.stringify(appConfig));
 
       this.attachCredentials(request);
 
@@ -203,6 +282,13 @@ class AccountManager {
           }
         })
         .end((err: any, res: superagent.Response) => {
+          const status = res ? res.status : err && err.status;
+          const header = (res && res.header) || (err && err.response && err.response.header) || {};
+          const retryAfter = retryAfterMs(header["retry-after"], this._clock.now());
+          if (status === 503 || (status === 429 && retryAfter !== null)) {
+            resolve({ retryAfterMs: retryAfter, statusCode: status });
+            return;
+          }
           if (err && !res) {
             reject(this.getCodePushError(err, res));
             return;
@@ -211,7 +297,7 @@ class AccountManager {
             reject(expoRouteError(res));
             return;
           }
-          resolve(<void>null);
+          resolve(null);
         });
     });
   }
@@ -221,7 +307,7 @@ class AccountManager {
     deploymentKey: string,
     rollout: number
   ): Promise<Array<{ id: string; platform: string; runtimeVersion: string; rollout: number }>> {
-    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/release`;
+    const url = this._serverUrl + urlEncode`/expo/v1/${deploymentKey}/release`;
 
     return Promise<Array<{ id: string; platform: string; runtimeVersion: string; rollout: number }>>((resolve, reject) => {
       const request: superagent.Request<any> = superagent.patch(url).set("Content-Type", "application/json").send({ rollout });
@@ -251,9 +337,9 @@ class AccountManager {
     options: { platform?: string; runtimeVersion?: string; toEmbedded?: boolean } = {}
   ): Promise<{
     rollbacks: Array<{ platform: string; runtimeVersion: string; mode: string; releaseId: string }>;
-    skipped: Array<{ platform: string; runtimeVersion: string; reason: string }>;
+    skipped: Array<{ platform: string; runtimeVersion: string; reason: string; failed?: boolean; busy?: boolean }>;
   }> {
-    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/rollback`;
+    const url = this._serverUrl + urlEncode`/expo/v1/${deploymentKey}/rollback`;
     const body: Record<string, any> = {};
     if (options.platform) body.platform = options.platform;
     if (options.runtimeVersion) body.runtimeVersion = options.runtimeVersion;
@@ -289,9 +375,9 @@ class AccountManager {
     options: { platform?: string; rollout?: number } = {}
   ): Promise<{
     promotions: Array<{ platform: string; runtimeVersion: string; label: string | null }>;
-    skipped: Array<{ platform: string; runtimeVersion: string; reason: string }>;
+    skipped: Array<{ platform: string; runtimeVersion: string; reason: string; failed?: boolean; busy?: boolean }>;
   }> {
-    const url = `${this._serverUrl}/expo/v1/${encodeURIComponent(deploymentKey)}/promote`;
+    const url = this._serverUrl + urlEncode`/expo/v1/${deploymentKey}/promote`;
     const body: Record<string, any> = { to };
     if (options.platform) body.platform = options.platform;
     if (options.rollout) body.rollout = options.rollout;
@@ -336,7 +422,7 @@ class AccountManager {
   }
 
   public getWebhooks(): Promise<any[]> {
-    return this.get(urlEncode(["/webhooks"])).then((res: JsonResponse) => res.body.webhooks);
+    return this.get(urlEncode`/webhooks`).then((res: JsonResponse) => res.body.webhooks);
   }
 
   public addWebhook(url: string, name?: string, events?: string[], secret?: string, enabled?: boolean): Promise<any> {
@@ -345,21 +431,21 @@ class AccountManager {
     if (events) body.events = events;
     if (secret) body.secret = secret;
     if (enabled !== undefined) body.enabled = enabled;
-    return this.post(urlEncode(["/webhooks"]), JSON.stringify(body), /*expectResponseBody=*/ true).then(
+    return this.post(urlEncode`/webhooks`, JSON.stringify(body), /*expectResponseBody=*/ true).then(
       (res: JsonResponse) => res.body.webhook
     );
   }
 
   public updateWebhook(id: string, updates: Record<string, any>): Promise<void> {
-    return this.patch(urlEncode([`/webhooks/${id}`]), JSON.stringify(updates), /*expectResponseBody=*/ false).then(() => null);
+    return this.patch(urlEncode`/webhooks/${id}`, JSON.stringify(updates), /*expectResponseBody=*/ false).then(() => null);
   }
 
   public removeWebhook(id: string): Promise<void> {
-    return this.del(urlEncode([`/webhooks/${id}`])).then(() => null);
+    return this.del(urlEncode`/webhooks/${id}`).then(() => null);
   }
 
   public getAccessKeys(): Promise<AccessKey[]> {
-    return this.get(urlEncode(["/accessKeys"])).then((res: JsonResponse) => {
+    return this.get(urlEncode`/accessKeys`).then((res: JsonResponse) => {
       const accessKeys: AccessKey[] = [];
 
       res.body.accessKeys.forEach((serverAccessKey: ServerAccessKey) => {
@@ -370,6 +456,8 @@ class AccountManager {
             name: serverAccessKey.friendlyName,
             scopes: serverAccessKey.scopes,
             appNames: serverAccessKey.appNames,
+            // Older APIs don't send lastUsedAt; leave it unset rather than showing "Never".
+            ...("lastUsedAt" in serverAccessKey ? { lastUsedAt: serverAccessKey.lastUsedAt } : {}),
           });
       });
 
@@ -378,17 +466,21 @@ class AccountManager {
   }
 
   public getSessions(): Promise<Session[]> {
-    return this.get(urlEncode(["/accessKeys"])).then((res: JsonResponse) => {
+    return this.get(urlEncode`/accessKeys`).then((res: JsonResponse) => {
       // A machine name might be associated with multiple session keys,
       // but we should only return one per machine name.
       const sessionMap: { [machineName: string]: Session } = {};
       const now: number = new Date().getTime();
+      // Group sessions by machine name. Older APIs only send the login IP, as createdBy.
       res.body.accessKeys.forEach((serverAccessKey: ServerAccessKey) => {
         if (serverAccessKey.isSession && serverAccessKey.expires > now) {
-          sessionMap[serverAccessKey.createdBy] = {
-            loggedInTime: serverAccessKey.createdTime,
-            machineName: serverAccessKey.createdBy,
-          };
+          const machineName: string = serverAccessKey.machineName || serverAccessKey.createdBy;
+          const ip: string | null =
+            serverAccessKey.createdByIp ?? (serverAccessKey.createdBy !== machineName ? serverAccessKey.createdBy : null);
+          const session: Session = sessionMap[machineName] ?? { loggedInTime: serverAccessKey.createdTime, machineName, ips: [] };
+          session.loggedInTime = Math.max(session.loggedInTime ?? 0, serverAccessKey.createdTime ?? 0);
+          if (ip && !session.ips.includes(ip)) session.ips.push(ip);
+          sessionMap[machineName] = session;
         }
       });
 
@@ -404,7 +496,7 @@ class AccountManager {
       ttl,
     };
 
-    return this.patch(urlEncode([`/accessKeys/${oldName}`]), JSON.stringify(accessKeyRequest)).then((res: JsonResponse) => {
+    return this.patch(urlEncode`/accessKeys/${oldName}`, JSON.stringify(accessKeyRequest)).then((res: JsonResponse) => {
       return {
         createdTime: res.body.accessKey.createdTime,
         expires: res.body.accessKey.expires,
@@ -414,125 +506,135 @@ class AccountManager {
   }
 
   public removeAccessKey(name: string): Promise<void> {
-    return this.del(urlEncode([`/accessKeys/${name}`])).then(() => null);
+    if (!isDotSegment(name)) {
+      return this.del(urlEncode`/accessKeys/${name}`).then(() => null);
+    }
+    // "." and ".." can't be sent in the path, so revoke by id instead.
+    return this.get(urlEncode`/accessKeys`).then((res: JsonResponse) => {
+      const key = (res.body.accessKeys || []).find((k: ServerAccessKey & { id?: string }) => !k.isSession && k.friendlyName === name);
+      if (!key || !key.id) {
+        throw <CodePushError>{ message: `Access key "${name}" does not exist.`, statusCode: AccountManager.ERROR_NOT_FOUND };
+      }
+      return this.del(`/accessKeys?id=${encodeURIComponent(key.id)}`).then(() => null);
+    });
   }
 
   public removeSession(machineName: string): Promise<void> {
-    return this.del(urlEncode([`/sessions/${machineName}`])).then(() => null);
+    return this.del(urlEncode`/sessions/${machineName}`).then(() => null);
   }
 
   // Account
   public getAccountInfo(): Promise<Account> {
-    return this.get(urlEncode(["/account"])).then((res: JsonResponse) => res.body.account);
+    return this.get(urlEncode`/account`).then((res: JsonResponse) => res.body.account);
   }
 
   // Apps
   public getApps(): Promise<App[]> {
-    return this.get(urlEncode(["/apps"])).then((res: JsonResponse) => res.body.apps);
+    return this.get(urlEncode`/apps`).then((res: JsonResponse) => res.body.apps);
   }
 
   public getApp(appName: string): Promise<App> {
-    return this.get(urlEncode([`/apps/${appName}`])).then((res: JsonResponse) => res.body.app);
+    return this.get(urlEncode`/apps/${appName}`).then((res: JsonResponse) => res.body.app);
   }
 
   public addApp(appName: string, platform?: string): Promise<App> {
     const app: App = { name: appName, ...(platform ? { platform } : {}) };
     // Resolve with the server's app, not the one sent: only its copy carries generated fields.
-    return this.post(urlEncode(["/apps/"]), JSON.stringify(app), /*expectResponseBody=*/ true).then(
+    return this.post(urlEncode`/apps/`, JSON.stringify(app), /*expectResponseBody=*/ true).then(
       (res: JsonResponse) => res.body.app as App
     );
   }
 
   public removeApp(appName: string): Promise<void> {
-    return this.del(urlEncode([`/apps/${appName}`])).then(() => null);
+    return this.del(urlEncode`/apps/${appName}`).then(() => null);
   }
 
   public renameApp(oldAppName: string, newAppName: string): Promise<void> {
-    return this.patch(urlEncode([`/apps/${oldAppName}`]), JSON.stringify({ name: newAppName })).then(() => null);
+    return this.patch(urlEncode`/apps/${oldAppName}`, JSON.stringify({ name: newAppName })).then(() => null);
   }
 
   public setAppPublicKey(appName: string, publicKey: string): Promise<void> {
-    return this.patch(urlEncode([`/apps/${appName}`]), JSON.stringify({ signingKey: publicKey })).then(() => null);
+    return this.patch(urlEncode`/apps/${appName}`, JSON.stringify({ signingKey: publicKey })).then(() => null);
   }
 
   public transferApp(appName: string, email: string): Promise<void> {
-    return this.post(urlEncode([`/apps/${appName}/transfer/${email}`]), /*requestBody=*/ null, /*expectResponseBody=*/ false).then(
+    return this.post(urlEncode`/apps/${appName}/transfer/${email}`, /*requestBody=*/ null, /*expectResponseBody=*/ false).then(
       () => null
     );
   }
 
   // Collaborators
   public getCollaborators(appName: string): Promise<CollaboratorMap> {
-    return this.get(urlEncode([`/apps/${appName}/collaborators`])).then((res: JsonResponse) => res.body.collaborators);
+    return this.get(urlEncode`/apps/${appName}/collaborators`).then((res: JsonResponse) => res.body.collaborators);
   }
 
   public addCollaborator(appName: string, email: string): Promise<void> {
     return this.post(
-      urlEncode([`/apps/${appName}/collaborators/${email}`]),
+      urlEncode`/apps/${appName}/collaborators/${email}`,
       /*requestBody=*/ null,
       /*expectResponseBody=*/ false
     ).then(() => null);
   }
 
   public removeCollaborator(appName: string, email: string): Promise<void> {
-    return this.del(urlEncode([`/apps/${appName}/collaborators/${email}`])).then(() => null);
+    return this.del(urlEncode`/apps/${appName}/collaborators/${email}`).then(() => null);
   }
 
   // Deployments
   public addDeployment(appName: string, deploymentName: string): Promise<Deployment> {
     const deployment = <Deployment>{ name: deploymentName };
-    return this.post(urlEncode([`/apps/${appName}/deployments/`]), JSON.stringify(deployment), /*expectResponseBody=*/ true).then(
+    return this.post(urlEncode`/apps/${appName}/deployments/`, JSON.stringify(deployment), /*expectResponseBody=*/ true).then(
       (res: JsonResponse) => res.body.deployment
     );
   }
 
   public clearDeploymentHistory(appName: string, deploymentName: string): Promise<void> {
-    return this.del(urlEncode([`/apps/${appName}/deployments/${deploymentName}/history`])).then(() => null);
+    return this.del(urlEncode`/apps/${appName}/deployments/${deploymentName}/history`).then(() => null);
   }
 
   public getDeployments(appName: string): Promise<Deployment[]> {
-    return this.get(urlEncode([`/apps/${appName}/deployments/`])).then((res: JsonResponse) => res.body.deployments);
+    return this.get(urlEncode`/apps/${appName}/deployments/`).then((res: JsonResponse) => res.body.deployments);
   }
 
   public getDeployment(appName: string, deploymentName: string): Promise<Deployment> {
-    return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}`])).then((res: JsonResponse) => res.body.deployment);
+    return this.get(urlEncode`/apps/${appName}/deployments/${deploymentName}`).then((res: JsonResponse) => res.body.deployment);
   }
 
   public renameDeployment(appName: string, oldDeploymentName: string, newDeploymentName: string): Promise<void> {
     return this.patch(
-      urlEncode([`/apps/${appName}/deployments/${oldDeploymentName}`]),
+      urlEncode`/apps/${appName}/deployments/${oldDeploymentName}`,
       JSON.stringify({ name: newDeploymentName })
     ).then(() => null);
   }
 
   public removeDeployment(appName: string, deploymentName: string): Promise<void> {
-    return this.del(urlEncode([`/apps/${appName}/deployments/${deploymentName}`])).then(() => null);
+    return this.del(urlEncode`/apps/${appName}/deployments/${deploymentName}`).then(() => null);
   }
 
   public getAutoRollbackConfig(appName: string, deploymentName: string): Promise<any> {
-    return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`])).then(
+    return this.get(urlEncode`/apps/${appName}/deployments/${deploymentName}/auto-rollback`).then(
       (res: JsonResponse) => res.body.autoRollbackConfig
     );
   }
 
   public setAutoRollbackConfig(appName: string, deploymentName: string, config: { enabled: boolean; errorRateThreshold: number; minDevices: number }): Promise<any> {
-    return this.put(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`]), JSON.stringify(config)).then(
+    return this.put(urlEncode`/apps/${appName}/deployments/${deploymentName}/auto-rollback`, JSON.stringify(config)).then(
       (res: JsonResponse) => res.body.autoRollbackConfig
     );
   }
 
   public deleteAutoRollbackConfig(appName: string, deploymentName: string): Promise<void> {
-    return this.del(urlEncode([`/apps/${appName}/deployments/${deploymentName}/auto-rollback`])).then(() => null);
+    return this.del(urlEncode`/apps/${appName}/deployments/${deploymentName}/auto-rollback`).then(() => null);
   }
 
   public getDeploymentMetrics(appName: string, deploymentName: string): Promise<DeploymentMetrics> {
-    return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}/metrics`])).then(
+    return this.get(urlEncode`/apps/${appName}/deployments/${deploymentName}/metrics`).then(
       (res: JsonResponse) => res.body.metrics
     );
   }
 
   public getDeploymentHistory(appName: string, deploymentName: string): Promise<Package[]> {
-    return this.get(urlEncode([`/apps/${appName}/deployments/${deploymentName}/history`])).then(
+    return this.get(urlEncode`/apps/${appName}/deployments/${deploymentName}/history`).then(
       (res: JsonResponse) => res.body.history
     );
   }
@@ -549,70 +651,68 @@ class AccountManager {
     return Promise<void>((resolve, reject, notify) => {
       updateMetadata.appVersion = targetBinaryVersion;
       const request: superagent.Request<any> = superagent.post(
-        this._serverUrl + urlEncode([`/apps/${appName}/deployments/${deploymentName}/release`])
+        this._serverUrl + urlEncode`/apps/${appName}/deployments/${deploymentName}/release`
       );
 
       this.attachCredentials(request);
 
-      const getPackageFilePromise = Q.Promise((resolve, reject) => {
-        this.packageFileFromPath(filePath, signatureJwt)
-          .then((result) => {
-            resolve(result);
-          })
-          .catch((error) => {
-            reject(error);
-          });
-      });
+      // Q.fcall also catches a synchronous throw. Without the catch below, a failed zip left this promise
+      // pending and the CLI exited 0 without releasing anything.
+      Q.fcall(() => this.packageFileFromPath(filePath, signatureJwt))
+        .catch((error: any) => {
+          throw new Error(`Could not prepare the release package from "${filePath}": ${(error && error.message) || error}`);
+        })
+        .then((packageFile: PackageFile) => {
+          const file: any = fs.createReadStream(packageFile.path);
+          request
+            .attach("package", file)
+            .field("packageInfo", JSON.stringify(updateMetadata));
 
-      getPackageFilePromise.then((packageFile: PackageFile) => {
-        const file: any = fs.createReadStream(packageFile.path);
-        request
-          .attach("package", file)
-          .field("packageInfo", JSON.stringify(updateMetadata));
+          if (signatureJwt) {
+            request.field("packageSignature", signatureJwt);
+          }
 
-        if (signatureJwt) {
-          request.field("packageSignature", signatureJwt);
-        }
-
-        request
-          .on("progress", (event: any) => {
-            if (uploadProgressCallback && event && event.total > 0) {
-              const currentProgress: number = (event.loaded / event.total) * 100;
-              uploadProgressCallback(currentProgress);
-            }
-          })
-          .end((err: any, res: superagent.Response) => {
-            if (packageFile.isTemporary) {
-              fs.unlinkSync(packageFile.path);
-            }
-
-            if (err) {
-              reject(this.getCodePushError(err, res));
-              return;
-            }
-
-            if (res.ok) {
-              resolve(<void>null);
-            } else {
-              let body;
-              try {
-                body = JSON.parse(res.text);
-              } catch (err) {}
-
-              if (body) {
-                reject(<CodePushError>{
-                  message: body.message,
-                  statusCode: res && res.status,
-                });
-              } else {
-                reject(<CodePushError>{
-                  message: res.text,
-                  statusCode: res && res.status,
-                });
+          request
+            .on("progress", (event: any) => {
+              if (uploadProgressCallback && event && event.total > 0) {
+                const currentProgress: number = (event.loaded / event.total) * 100;
+                uploadProgressCallback(currentProgress);
               }
-            }
-          });
-      });
+            })
+            .end((err: any, res: superagent.Response) => {
+              if (packageFile.isTemporary) {
+                removeQuietly(packageFile.path);
+              }
+
+              if (err) {
+                reject(this.getCodePushError(err, res));
+                return;
+              }
+
+              if (res.ok) {
+                resolve(<void>null);
+              } else {
+                let body;
+                try {
+                  body = JSON.parse(res.text);
+                } catch (err) {}
+
+                if (body) {
+                  reject(<CodePushError>{
+                    message: body.message,
+                    statusCode: res && res.status,
+                  });
+                } else {
+                  reject(<CodePushError>{
+                    message: res.text,
+                    statusCode: res && res.status,
+                  });
+                }
+              }
+            });
+        })
+        .catch((error: any) => reject(error))
+        .done();
     });
   }
 
@@ -620,7 +720,7 @@ class AccountManager {
     updateMetadata.label = label;
     const requestBody: string = JSON.stringify({ packageInfo: updateMetadata });
     return this.patch(
-      urlEncode([`/apps/${appName}/deployments/${deploymentName}/release`]),
+      urlEncode`/apps/${appName}/deployments/${deploymentName}/release`,
       requestBody,
       /*expectResponseBody=*/ false
     ).then(() => null);
@@ -634,7 +734,7 @@ class AccountManager {
   ): Promise<void> {
     const requestBody: string = JSON.stringify({ packageInfo: updateMetadata });
     return this.post(
-      urlEncode([`/apps/${appName}/deployments/${sourceDeploymentName}/promote/${destinationDeploymentName}`]),
+      urlEncode`/apps/${appName}/deployments/${sourceDeploymentName}/promote/${destinationDeploymentName}`,
       requestBody,
       /*expectResponseBody=*/ false
     ).then(() => null);
@@ -642,7 +742,7 @@ class AccountManager {
 
   public rollback(appName: string, deploymentName: string, targetRelease?: string): Promise<void> {
     return this.post(
-      urlEncode([`/apps/${appName}/deployments/${deploymentName}/rollback/${targetRelease || ``}`]),
+      urlEncode`/apps/${appName}/deployments/${deploymentName}/rollback/${targetRelease || ""}`,
       /*requestBody=*/ null,
       /*expectResponseBody=*/ false
     ).then(() => null);
@@ -664,12 +764,16 @@ class AccountManager {
           const fileName: string = this.generateRandomFilename(15) + ".zip";
           const zipFile = new yazl.ZipFile();
           const writeStream: fs.WriteStream = fs.createWriteStream(fileName);
+          const fail = (error: Error): void => {
+            removeQuietly(fileName);
+            reject(error);
+          };
 
+          // yazl emits read errors on the ZipFile and pipe() doesn't forward them, so handle both.
+          zipFile.on("error", fail);
           zipFile.outputStream
             .pipe(writeStream)
-            .on("error", (error: Error): void => {
-              reject(error);
-            })
+            .on("error", fail)
             .on("close", (): void => {
               filePath = path.join(process.cwd(), fileName);
 
@@ -697,12 +801,15 @@ class AccountManager {
         const fileName: string = this.generateRandomFilename(15) + ".zip";
         const zipFile = new yazl.ZipFile();
         const writeStream: fs.WriteStream = fs.createWriteStream(fileName);
+        const fail = (error: Error): void => {
+          removeQuietly(fileName);
+          reject(error);
+        };
 
+        zipFile.on("error", fail);
         zipFile.outputStream
           .pipe(writeStream)
-          .on("error", (error: Error): void => {
-            reject(error);
-          })
+          .on("error", fail)
           .on("close", (): void => {
             resolve({ isTemporary: true, path: path.join(process.cwd(), fileName) });
           });
@@ -852,6 +959,11 @@ class AccountManager {
       request.set("x-org-id", this._orgId);
     }
   }
+}
+
+interface ExpoBusy {
+  retryAfterMs: number | null;
+  statusCode: number;
 }
 
 function expoRouteError(res: superagent.Response): CodePushError {

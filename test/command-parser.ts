@@ -140,6 +140,34 @@ describe("command line", function () {
     assert.ok(UNKNOWN_ARGUMENT.test(result.output), result.output.slice(0, 300));
   });
 
+  // ---------------------------------------------------------------------------
+  // --yes: the commands that ask "Are you sure?" can be answered from a script, and only those.
+  // ---------------------------------------------------------------------------
+  const CONFIRMING_COMMANDS: string[][] = [
+    ["access-key", "rm", "CI key"],
+    ["app", "rm", "MyApp"],
+    ["app", "transfer", "MyApp", "a@example.com"],
+    ["collaborator", "rm", "MyApp", "a@example.com"],
+    ["deployment", "rm", "MyApp", "Staging"],
+    ["deployment", "clear", "MyApp", "Staging"],
+    ["rollback", "MyApp", "Staging"],
+    ["session", "rm", "build-box"],
+  ];
+
+  for (const args of CONFIRMING_COMMANDS) {
+    it(`${args.slice(0, 2).join(" ")} takes --yes and -y`, () => {
+      assert.strictEqual(parse(...args, "--yes").yes, true);
+      assert.strictEqual(parse(...args, "-y").yes, true);
+      assert.strictEqual(parse(...args).yes, undefined, "absent unless asked for");
+    });
+  }
+
+  it("--yes is refused on a command that asks nothing, rather than silently ignored", () => {
+    const result = run("app", "ls", "--yes");
+    assert.notStrictEqual(result.status, 0);
+    assert.ok(UNKNOWN_ARGUMENT.test(result.output), result.output.slice(0, 300));
+  });
+
   it("--deployment is accepted as an alias for --deploymentName", () => {
     const result = run("release-react", "myapp", "ios", "--deployment", "Production");
     assert.ok(!UNKNOWN_ARGUMENT.test(result.output), result.output.slice(0, 300));
@@ -154,7 +182,7 @@ describe("command line", function () {
     const result = run("release-expo", "-h");
     assert.strictEqual(result.status, 0);
     assert.ok(/Usage: dpctl release-expo/.test(result.output), result.output.slice(0, 400));
-    ["--exportDir", "--runtimeVersion", "--platform"].forEach((flag: string) => {
+    ["--exportDir", "--runtimeVersion", "--platform", "--appConfig", "--skipAppConfig"].forEach((flag: string) => {
       assert.ok(result.output.indexOf(flag) >= 0, `${flag} is missing from release-expo help`);
     });
   });
