@@ -10,6 +10,7 @@ import * as path from "path";
 import * as codePush from "../script/types";
 import * as cli from "../script/types/cli";
 import * as cmdexec from "../script/command-executor";
+import AccountManager = require("../script/management-sdk");
 import { assertReleasePlatform, checkReleaseProjectKind, detectCodePushProjectKind, detectProjectRuntime } from "../script/ota-runtime";
 import { getiOSHermesEnabled } from "../script/react-native-utils";
 import * as rnUtils from "../script/react-native-utils";
@@ -615,6 +616,35 @@ describe("CLI", () => {
     });
   });
 
+  it("accessKeyList shows when each key was last used", (done: Mocha.Done): void => {
+    const lastUsed = new Date(NOW - 60 * 24 * 60 * 60 * 1000).toISOString();
+    sandbox.stub(cmdexec.sdk, "getAccessKeys").returns(
+      Q([
+        <codePush.AccessKey>{ createdTime: 0, name: "Used key", expires: NOW + DEFAULT_ACCESS_KEY_MAX_AGE, lastUsedAt: lastUsed },
+        <codePush.AccessKey>{ createdTime: 0, name: "Unused key", expires: NOW + DEFAULT_ACCESS_KEY_MAX_AGE, lastUsedAt: null },
+        <codePush.AccessKey>{ createdTime: 0, name: "Old server key", expires: NOW + DEFAULT_ACCESS_KEY_MAX_AGE },
+      ])
+    );
+    var command: cli.IAccessKeyListCommand = {
+      type: cli.CommandType.accessKeyList,
+      format: "table",
+    };
+
+    cmdexec.execute(command).done((): void => {
+      var table: string = log.args[0][0];
+      // The "Last used" cell (4th column) of each key's row, colours stripped.
+      const plain = table.replace(/\u001b\[[0-9;]*m/g, "");
+      const lastUsedCell = (name: string): string =>
+        (plain.split("\n").find((l) => l.includes(name)) ?? "").split("│").map((c) => c.trim())[4] ?? "";
+      assert.ok(/Last used/.test(plain), table);
+      const used = lastUsedCell("Used key");
+      assert.ok(used !== "" && used !== "Never", `a used key shows when: ${table}`);
+      assert.equal(lastUsedCell("Unused key"), "Never", table);
+      assert.equal(lastUsedCell("Old server key"), "", "a server that does not report it is not shown as Never");
+      done();
+    });
+  });
+
   it("deploymentErrors returns only the requested deployment, with a summary, as JSON", (done: Mocha.Done): void => {
     var command: cli.IDeploymentErrorsCommand = {
       type: cli.CommandType.deploymentErrors,
@@ -759,6 +789,57 @@ describe("CLI", () => {
       sinon.assert.calledWithExactly(log, 'Successfully removed the "8" access key.');
 
       done();
+    });
+  });
+
+  describe("--yes", () => {
+    // The real prompt, not the suite's stub: --yes has to answer it, and only for the command it came with.
+    beforeEach(() => (cmdexec.confirm as unknown as sinon.SinonStub).restore());
+
+    function withoutTerminal<T>(body: () => T): T {
+      const descriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+      Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+      try {
+        return body();
+      } finally {
+        if (descriptor) Object.defineProperty(process.stdin, "isTTY", descriptor);
+        else delete (process.stdin as any).isTTY;
+      }
+    }
+
+    it("answers the prompt in a script, where it would otherwise say no", (done: Mocha.Done): void => {
+      const removeAccessKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "removeAccessKey");
+      withoutTerminal(() =>
+        cmdexec.execute(<cli.IAccessKeyRemoveCommand>{ type: cli.CommandType.accessKeyRemove, accessKey: "8", yes: true }).done((): void => {
+          sinon.assert.calledOnceWithExactly(removeAccessKey, "8");
+          sinon.assert.calledWithMatch(log, /\(y\/N\): yes \(--yes\)/);
+          done();
+        }, done)
+      );
+    });
+
+    it("without --yes, a script still gets no and nothing changes", (done: Mocha.Done): void => {
+      const removeAccessKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "removeAccessKey");
+      withoutTerminal(() =>
+        cmdexec.execute(<cli.IAccessKeyRemoveCommand>{ type: cli.CommandType.accessKeyRemove, accessKey: "8" }).done((): void => {
+          sinon.assert.notCalled(removeAccessKey);
+          sinon.assert.calledWithExactly(log, "Access key removal cancelled.");
+          done();
+        }, done)
+      );
+    });
+
+    it("one command's --yes does not answer the next command's prompt", (done: Mocha.Done): void => {
+      const removeApp: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "removeApp");
+      withoutTerminal(() =>
+        cmdexec
+          .execute(<cli.IAccessKeyRemoveCommand>{ type: cli.CommandType.accessKeyRemove, accessKey: "8", yes: true })
+          .then(() => cmdexec.execute(<cli.IAppRemoveCommand>{ type: cli.CommandType.appRemove, appName: "a" }))
+          .done((): void => {
+            sinon.assert.notCalled(removeApp);
+            done();
+          }, done)
+      );
     });
   });
 
@@ -995,7 +1076,7 @@ describe("CLI", () => {
     });
   });
 
-  it("appTransfer transfers app", (done: Mocha.Done): void => {
+  it("appTransfer sends a transfer invite and says the transfer waits for acceptance", (done: Mocha.Done): void => {
     var command: cli.IAppTransferCommand = {
       type: cli.CommandType.appTransfer,
       appName: "a",
@@ -1007,7 +1088,10 @@ describe("CLI", () => {
     cmdexec.execute(command).done((): void => {
       sinon.assert.calledOnce(transferApp);
       sinon.assert.calledOnce(log);
-      sinon.assert.calledWithExactly(log, 'Successfully transferred the ownership of app "a" to the account with email "b@b.com".');
+      sinon.assert.calledWithExactly(
+        log,
+        'Transfer invite for app "a" sent to b@b.com. The transfer completes once they accept it from the email (invites expire after 7 days).'
+      );
 
       done();
     });
@@ -1711,6 +1795,279 @@ describe("CLI", () => {
         done();
       })
       .catch(done)
+      .done();
+  });
+
+  it("rollback on an Expo Updates app exits non-zero when a target failed, still printing what it skipped", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "expo-app",
+      deploymentName: "Production",
+      targetRelease: null,
+    };
+
+    sandbox.stub(cmdexec.sdk, "rollbackExpo").returns(
+      Q({
+        rollbacks: [{ platform: "ios", runtimeVersion: "1.0.0", mode: "republish", releaseId: "r" }],
+        skipped: [
+          { platform: "android", runtimeVersion: "1.0.0", reason: "failed with a server error and was left unchanged; try again", failed: true },
+        ],
+      }) as any
+    );
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("1 target failed"), err.message);
+        sinon.assert.calledWithMatch(log, sinon.match("Skipped Android (runtime version 1.0.0)"));
+        sinon.assert.calledWithMatch(log, sinon.match("back to the previous release"));
+        done();
+      })
+      .done();
+  });
+
+  it("rollback on an Expo Updates app succeeds when targets were only skipped, not failed", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "expo-app",
+      deploymentName: "Production",
+      targetRelease: null,
+    };
+
+    sandbox.stub(cmdexec.sdk, "rollbackExpo").returns(
+      Q({ rollbacks: [], skipped: [{ platform: "android", runtimeVersion: "1.0.0", reason: "there is no previous release" }] }) as any
+    );
+
+    cmdexec
+      .execute(command)
+      .then(() => {
+        sinon.assert.calledWithMatch(log, sinon.match("Skipped Android"));
+        done();
+      })
+      .catch(done)
+      .done();
+  });
+
+  // FINC-D5: a retry after a rollback that landed gets the all-skipped 400. "Already rolled back" is the
+  // state asked for, so it exits 0; any other reason in the same 400 is still a refusal.
+  const expoRollbackCommand = (): cli.IRollbackCommand => ({
+    type: cli.CommandType.rollback,
+    appName: "expo-app",
+    deploymentName: "Production",
+    targetRelease: null,
+  });
+
+  it("rollback on an Expo Updates app succeeds when a retry finds every target already rolled back", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec.sdk, "rollbackExpo").returns(
+      Q.reject({
+        statusCode: 400,
+        message:
+          'Nothing was rolled back on the "Production" channel: ios runtime version 1.0.0 (already rolled back to the embedded bundle; release a new update to move forward); ' +
+          "android runtime version 1.0.0 (already serving that bundle; release a new update to move forward).",
+      }) as any
+    );
+
+    cmdexec
+      .execute(expoRollbackCommand())
+      .then(() => {
+        sinon.assert.calledWithMatch(log, sinon.match("already serves what this rollback asked for"));
+        done();
+      })
+      .catch(done)
+      .done();
+  });
+
+  it("rollback on an Expo Updates app still fails when one skipped target had nothing to go back to", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec.sdk, "rollbackExpo").returns(
+      Q.reject({
+        statusCode: 400,
+        message:
+          'Nothing was rolled back on the "Production" channel: ios runtime version 1.0.0 (already serving that bundle; release a new update to move forward); ' +
+          "android runtime version 1.0.0 (no earlier release to go back to; roll back to the embedded bundle instead).",
+      }) as any
+    );
+
+    cmdexec
+      .execute(expoRollbackCommand())
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("no earlier release"), err.message);
+        done();
+      })
+      .done();
+  });
+
+  it("rollback on an Expo Updates app still fails on a busy channel", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec.sdk, "rollbackExpo").returns(
+      Q.reject({
+        statusCode: 409,
+        message: 'Nothing was rolled back on the "Production" channel: ios runtime version 1.0.0 (already rolled back; another change to this channel is in progress).',
+      }) as any
+    );
+
+    cmdexec
+      .execute(expoRollbackCommand())
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.strictEqual(err.statusCode, 409);
+        done();
+      })
+      .done();
+  });
+
+  it("promote on an Expo Updates app exits non-zero when a target failed", (done: Mocha.Done): void => {
+    var command: cli.IPromoteCommand = {
+      type: cli.CommandType.promote,
+      appName: "expo-app",
+      sourceDeploymentName: "Staging",
+      destDeploymentName: "Production",
+      description: null,
+      label: null,
+      mandatory: null,
+      disabled: null,
+      rollout: null,
+      appStoreVersion: null,
+    };
+
+    sandbox.stub(cmdexec.sdk, "promoteExpo").returns(
+      Q({
+        promotions: [],
+        skipped: [
+          { platform: "ios", runtimeVersion: "1.0.0", reason: "failed with a server error and was left unchanged; try again", failed: true },
+          { platform: "android", runtimeVersion: "1.0.0", reason: "failed with a server error and was left unchanged; try again", failed: true },
+        ],
+      }) as any
+    );
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("2 targets failed"), err.message);
+        sinon.assert.calledWithMatch(log, sinon.match("Skipped iOS (runtime version 1.0.0)"));
+        done();
+      })
+      .done();
+  });
+
+  // CLI12-1: a target skipped because another change to the channel was in progress was left unchanged too,
+  // and exiting 0 on it let a script carry on as if the rollback had happened.
+  it("rollback on an Expo Updates app exits non-zero when a target was busy (busy: true)", (done: Mocha.Done): void => {
+    var command: cli.IRollbackCommand = {
+      type: cli.CommandType.rollback,
+      appName: "expo-app",
+      deploymentName: "Production",
+      targetRelease: null,
+    };
+
+    sandbox.stub(cmdexec.sdk, "rollbackExpo").returns(
+      Q({
+        rollbacks: [{ platform: "ios", runtimeVersion: "1.0.0", mode: "republish", releaseId: "r" }],
+        skipped: [{ platform: "android", runtimeVersion: "1.0.0", reason: "another change to this channel is in progress, try again", busy: true }],
+      }) as any
+    );
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("1 target was left unchanged because another change to the channel was in progress"), err.message);
+        sinon.assert.calledWithMatch(log, sinon.match("Skipped Android (runtime version 1.0.0)"));
+        done();
+      })
+      .done();
+  });
+
+  it("promote on an Expo Updates app exits non-zero on the busy reason from an API without the flag", (done: Mocha.Done): void => {
+    var command: cli.IPromoteCommand = {
+      type: cli.CommandType.promote,
+      appName: "expo-app",
+      sourceDeploymentName: "Staging",
+      destDeploymentName: "Production",
+      description: null,
+      label: null,
+      mandatory: null,
+      disabled: null,
+      rollout: null,
+      appStoreVersion: null,
+    };
+
+    sandbox.stub(cmdexec.sdk, "promoteExpo").returns(
+      Q({
+        promotions: [],
+        skipped: [
+          { platform: "ios", runtimeVersion: "1.0.0", reason: "another change to this channel is in progress, try again" },
+          { platform: "android", runtimeVersion: "1.0.0", reason: "failed with a server error and was left unchanged; try again", failed: true },
+        ],
+      }) as any
+    );
+
+    cmdexec
+      .execute(command)
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.ok(err.message.includes("1 target failed and 1 target was busy"), err.message);
+        done();
+      })
+      .done();
+  });
+
+  // AUTH12-L4: only `dpctl login` marks its /authenticated call as a login, so the API records one row per
+  // login instead of one per command.
+  // FINC-D1: a 401 that says why (a deleted account) must reach the user, not turn into "Invalid access key."
+  it("login --accessKey shows the API's reason for a 401", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>null);
+    // As the SDK does: a 401 rejects with the body's message only when asked to throw, else resolves false.
+    sandbox
+      .stub(AccountManager.prototype, "isAuthenticated")
+      .callsFake(((throwIfUnauthorized?: boolean) =>
+        throwIfUnauthorized ? Q.reject({ statusCode: 401, message: "This account has been deleted." }) : Q(false)) as any);
+
+    cmdexec
+      .execute(<cli.ILoginCommand>{ type: cli.CommandType.login, accessKey: "key-1" })
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.strictEqual(err.message, "This account has been deleted.");
+        done();
+      })
+      .done();
+  });
+
+  it("login --accessKey still says Invalid access key. for a 401 with no reason", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>null);
+    let calls = 0;
+    const bodies = ["Unauthorized", '{"authenticated":false}'];
+    sandbox
+      .stub(AccountManager.prototype, "isAuthenticated")
+      .callsFake(((throwIfUnauthorized?: boolean) => (throwIfUnauthorized ? Q.reject({ statusCode: 401, message: bodies[calls++] }) : Q(false))) as any);
+
+    const attempt = () =>
+      cmdexec.execute(<cli.ILoginCommand>{ type: cli.CommandType.login, accessKey: "key-1" }).then(
+        () => assert.fail("Did not throw error."),
+        (err: any) => assert.strictEqual(err.message, "Invalid access key.")
+      );
+    attempt()
+      .then(attempt)
+      .then(() => done())
+      .catch(done)
+      .done();
+  });
+
+  it("login --accessKey marks its key check as a login", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>null);
+    // false: the login stops at "Invalid access key." before it would write a session file.
+    const isAuthenticated = sandbox.stub(AccountManager.prototype, "isAuthenticated").callsFake(() => Q(false) as any);
+
+    cmdexec
+      .execute(<cli.ILoginCommand>{ type: cli.CommandType.login, accessKey: "key-1" })
+      .then(() => done(new Error("Did not throw error.")))
+      .catch((err) => {
+        assert.strictEqual(err.message, "Invalid access key.");
+        sinon.assert.calledOnce(isAuthenticated);
+        assert.strictEqual(isAuthenticated.firstCall.args[1], true, "isLogin");
+        done();
+      })
       .done();
   });
 
@@ -2541,6 +2898,43 @@ describe("CLI", () => {
     });
   });
 
+  // Org webhooks are selected by x-org-id (the API's org webhooks, PR #339), so webhook commands carry the
+  // organization like every other command; exempting them would manage the personal account's webhooks.
+  it("webhook commands send the organization in use as x-org-id", (done: Mocha.Done): void => {
+    const warn = sandbox.stub(console, "error");
+    let saved: string | undefined;
+    sandbox.stub(cmdexec, "deserializeConnectionInfo").callsFake(() => <any>{ accessKey: "key", orgId: saved });
+    const cases: Array<{ command: cli.ICommand; saved?: string; env?: string; expected: string }> = [
+      { command: <cli.IWebhookListCommand>{ type: cli.CommandType.webhookList, format: "json" }, saved: "org-id-saved", expected: "org-id-saved" },
+      { command: <cli.IWebhookListCommand>{ type: cli.CommandType.webhookList, format: "json" }, env: "org-id-env", expected: "org-id-env" },
+      { command: <cli.IWebhookListCommand>{ type: cli.CommandType.webhookList, format: "json", org: "acme" }, expected: "org-id-acme" },
+      { command: <cli.ICommand>(<any>{ type: cli.CommandType.webhookRemove, id: "wh-1", org: "acme" }), expected: "org-id-acme" },
+    ];
+    let chain = Q<void>(null);
+    cases.forEach((c) => {
+      chain = chain.then(() => {
+        saved = c.saved;
+        if (c.env) process.env.DEPLOYPULSE_ORG_ID = c.env;
+        else delete process.env.DEPLOYPULSE_ORG_ID;
+        (cmdexec.sdk as any).orgId = null;
+        return cmdexec.execute(c.command).then(() => {
+          assert.strictEqual((cmdexec.sdk as any).orgId, c.expected, cli.CommandType[c.command.type]);
+        });
+      });
+    });
+    chain.done(
+      (): void => {
+        delete process.env.DEPLOYPULSE_ORG_ID;
+        assert.ok(!warn.getCalls().some((call) => String(call.args[0]).indexOf("--org is ignored") >= 0), "no webhook exemption warning");
+        done();
+      },
+      (error: any) => {
+        delete process.env.DEPLOYPULSE_ORG_ID;
+        done(error);
+      }
+    );
+  });
+
   it("runs against the personal account when nothing asks for an organization", (done: Mocha.Done): void => {
     var command: cli.IAppListCommand = { type: cli.CommandType.appList, format: "json" };
 
@@ -2710,6 +3104,21 @@ describe("CLI", () => {
       ];
 
       assertJsonDescribesObject(actual, expected);
+      done();
+    });
+  });
+
+  it("sessionList shows each machine's hostname and login IP as a table", (done: Mocha.Done): void => {
+    sandbox.stub(cmdexec.sdk, "getSessions").returns(
+      Q([<codePush.Session>{ loggedInTime: 0, machineName: "Ryans-MBP.local", ips: ["203.0.113.7", "198.51.100.4"] }])
+    );
+    var command: cli.ISessionListCommand = { type: cli.CommandType.sessionList, format: "table" };
+
+    cmdexec.execute(command).done((): void => {
+      var table: string = log.args[0][0];
+      assert.ok(/Machine/.test(table) && /IP/.test(table) && /Logged in/.test(table), table);
+      assert.ok(/Ryans-MBP\.local/.test(table), table);
+      assert.ok(/203\.0\.113\.7, 198\.51\.100\.4/.test(table), table);
       done();
     });
   });
@@ -3045,6 +3454,32 @@ describe("CLI", () => {
     });
   }
 
+  const EXPO_APP_CONFIG = {
+    name: "Expo App",
+    slug: "expo-app",
+    version: "1.0.2",
+    extra: { apiUrl: "https://api.example.com", eas: { projectId: "0b4c2e0a-1111-4222-8333-444455556666" } },
+  };
+
+  /**
+   * Fakes `npx expo config` (expo-utils spawns it through child_process): prints `stdout`, then exits with
+   * `code`. Returns the stub so a test can check what was run, and where.
+   */
+  function fakeExpoConfig(stdout: string, code = 0, stderr = ""): sinon.SinonStub {
+    const { EventEmitter } = require("events");
+    return sandbox.stub(require("child_process"), "spawn").callsFake(() => {
+      const child: any = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      process.nextTick(() => {
+        if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+        if (stderr) child.stderr.emit("data", Buffer.from(stderr));
+        child.emit("close", code);
+      });
+      return child;
+    });
+  }
+
   // Runs the command with the working directory set to `dir`, then asserts on how it settled.
   function executeIn(dir: string, command: cli.ICommand, done: Mocha.Done, check: (error?: any) => void, expectFailure: boolean): void {
     const previous = process.cwd();
@@ -3076,6 +3511,7 @@ describe("CLI", () => {
       runtimeVersion: "1.0.2",
     };
     var entriesByPlatform: { [platform: string]: string[] } = {};
+    fakeExpoConfig(JSON.stringify(EXPO_APP_CONFIG));
     var releaseExpo: sinon.SinonStub = sandbox
       .stub(cmdexec.sdk, "releaseExpo")
       .callsFake((key: string, zipPath: string, platform: string) =>
@@ -3114,6 +3550,7 @@ describe("CLI", () => {
       runtimeVersion: "exposdk:52.0.0",
       metadata: '{"channel":"stable"}',
     };
+    fakeExpoConfig(JSON.stringify(EXPO_APP_CONFIG));
     var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
 
     executeIn(TEST_APP_DIR, command, done, () => {
@@ -3122,6 +3559,168 @@ describe("CLI", () => {
       assert.equal(releaseExpo.args[0][3], "exposdk:52.0.0");
       assert.deepEqual(releaseExpo.args[0][4], { channel: "stable" });
     }, false);
+  });
+
+  it("release-expo says the server is busy each time the SDK waits to retry", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      platform: "ios",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    fakeExpoConfig(JSON.stringify(EXPO_APP_CONFIG));
+    sandbox.stub(cmdexec.sdk, "releaseExpo").callsFake((...args: any[]) => {
+      const onBusy: (waitMs: number) => void = args[9];
+      onBusy(2000);
+      onBusy(4000);
+      return Q(<void>null);
+    });
+
+    executeIn(TEST_APP_DIR, command, done, () => {
+      const busy = log.args.filter((args: any[]) => String(args[0]).includes("Server busy, retrying…"));
+      assert.equal(busy.length, 2);
+    }, false);
+  });
+
+  it("release-expo reports the SDK's give-up as the failure", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      platform: "ios",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    fakeExpoConfig(JSON.stringify(EXPO_APP_CONFIG));
+    sandbox.stub(cmdexec.sdk, "releaseExpo").callsFake(() => Q.reject({ message: "Server busy, try again later.", statusCode: 503 }));
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.equal(error.message, "Server busy, try again later.");
+    }, true);
+  });
+
+  // The app config: devices read it as Constants.expoConfig once they run the update, so it goes with every
+  // release, and a release that can't get it fails unless --skipAppConfig says otherwise.
+
+  it("release-expo reads the public app config with npx expo config and sends it with every platform", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    // A config plugin's warning before the JSON line must not break parsing.
+    var expoConfig: sinon.SinonStub = fakeExpoConfig("warning: something a plugin printed\n" + JSON.stringify(EXPO_APP_CONFIG) + "\n");
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, () => {
+      sinon.assert.calledOnce(expoConfig);
+      assert.deepEqual(expoConfig.args[0][1], ["--no", "expo", "config", "--type", "public", "--json"]);
+      assert.equal(fs.realpathSync(expoConfig.args[0][2].cwd), fs.realpathSync(TEST_APP_DIR));
+      sinon.assert.calledTwice(releaseExpo);
+      assert.deepEqual(releaseExpo.args[0][8], EXPO_APP_CONFIG);
+      assert.deepEqual(releaseExpo.args[1][8], EXPO_APP_CONFIG);
+    }, false);
+  });
+
+  it("release-expo releases nothing when npx expo config fails, and says how to proceed", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    fakeExpoConfig("", 1, "ConfigError: app.config.js threw");
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("Could not read your app config"), error.message);
+      assert.ok(error.message.includes("app.config.js threw"), error.message);
+      assert.ok(error.message.includes("--skipAppConfig"), error.message);
+      assert.ok(error.message.includes("--appConfig"), error.message);
+      sinon.assert.notCalled(releaseExpo);
+    }, true);
+  });
+
+  it("release-expo releases nothing when npx expo config prints something that is not a JSON object", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    fakeExpoConfig("{ this is not json\n");
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("did not give a JSON object"), error.message);
+      sinon.assert.notCalled(releaseExpo);
+    }, true);
+  });
+
+  it("release-expo --skipAppConfig releases without the config, and warns", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      platform: "ios",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+      skipAppConfig: true,
+    };
+    var expoConfig: sinon.SinonStub = fakeExpoConfig("", 1);
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, () => {
+      sinon.assert.notCalled(expoConfig);
+      sinon.assert.calledOnce(releaseExpo);
+      assert.strictEqual(releaseExpo.args[0][8], undefined);
+      assert.ok(log.args.some((args: any[]) => String(args[0]).includes("Releasing without the app config")));
+    }, false);
+  });
+
+  it("release-expo --appConfig sends a saved config without running expo", (done: Mocha.Done): void => {
+    var file: string = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "dpctl-test-config-")), "config.json");
+    fs.writeFileSync(file, JSON.stringify(EXPO_APP_CONFIG));
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      platform: "android",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+      appConfig: file,
+    };
+    var expoConfig: sinon.SinonStub = fakeExpoConfig("", 1);
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, () => {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+      sinon.assert.notCalled(expoConfig);
+      assert.deepEqual(releaseExpo.args[0][8], EXPO_APP_CONFIG);
+    }, false);
+  });
+
+  it("release-expo refuses an app config over the server's cap before uploading", (done: Mocha.Done): void => {
+    var command: cli.IReleaseExpoCommand = {
+      type: cli.CommandType.releaseExpo,
+      appName: "expo-app",
+      deploymentName: "Production",
+      exportDir: EXPO_EXPORT_DIR,
+      runtimeVersion: "1.0.2",
+    };
+    fakeExpoConfig(JSON.stringify({ extra: { blob: "x".repeat(256 * 1024) } }));
+    var releaseExpo: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "releaseExpo");
+
+    executeIn(TEST_APP_DIR, command, done, (error: any) => {
+      assert.ok(error.message.includes("larger than 256 KB"), error.message);
+      sinon.assert.notCalled(releaseExpo);
+    }, true);
   });
 
   it("release-expo uploads nothing when the export is missing a platform", (done: Mocha.Done): void => {

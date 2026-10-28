@@ -107,6 +107,72 @@ export function resolveRuntimeVersion(projectRoot: string, platform: string): Pr
   });
 }
 
+// Same limit as MAX_APP_CONFIG_BYTES in the API, checked before uploading.
+export const MAX_APP_CONFIG_BYTES = 256 * 1024;
+
+const APP_CONFIG_COMMAND = "npx expo config --type public --json";
+
+/** The app config from `expo config` output or a file: one JSON object, under the server's cap. */
+export function parseAppConfig(text: string, source: string): { [key: string]: any } {
+  const trimmed = (text || "").trim();
+  let config: any;
+  try {
+    config = JSON.parse(trimmed);
+  } catch {
+    // Config plugins can print warnings before the JSON, so fall back to the last line that starts with "{".
+    const jsonLine = trimmed
+      .split(/\r?\n/)
+      .reverse()
+      .find((line: string) => line.trim().startsWith("{"));
+    try {
+      config = jsonLine ? JSON.parse(jsonLine) : undefined;
+    } catch {
+      config = undefined;
+    }
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`${source} did not give a JSON object: ${trimmed.slice(0, 200) || "(nothing)"}`);
+  }
+  if (Buffer.byteLength(JSON.stringify(config), "utf8") > MAX_APP_CONFIG_BYTES) {
+    throw new Error(`Your app config is larger than ${MAX_APP_CONFIG_BYTES / 1024} KB, the most a release can carry. Move large values out of it.`);
+  }
+  return config;
+}
+
+// Runs `npx expo config --type public --json`, the config expo-constants exposes as Constants.expoConfig.
+// expo config has no platform option, so one config covers both platforms.
+export function readPublicAppConfig(projectRoot: string): Promise<{ [key: string]: any }> {
+  return new Promise((resolve, reject) => {
+    const child = spawnNpx(["expo", "config", "--type", "public", "--json"], projectRoot, /*captureOutput*/ true);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    child.on("error", (err: Error) => reject(new Error(`Could not run "${APP_CONFIG_COMMAND}": ${err.message}`)));
+    child.on("close", (code: number) => {
+      if (code !== 0) {
+        return reject(new Error(`"${APP_CONFIG_COMMAND}" exited with code ${code}.` + (stderr.trim() ? `\n${stderr.trim()}` : "")));
+      }
+      try {
+        resolve(parseAppConfig(stdout, `"${APP_CONFIG_COMMAND}"`));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+/** An app config saved earlier with `npx expo config --type public --json > file`, for --appConfig. */
+export function readAppConfigFile(file: string): { [key: string]: any } {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err: any) {
+    throw new Error(`Could not read the app config file "${file}": ${err?.message ?? err}`);
+  }
+  return parseAppConfig(text, `"${file}"`);
+}
+
 export function readExportMetadata(exportDir: string): ExpoExportMetadata {
   const file = path.join(exportDir, "metadata.json");
   let metadata: any;
@@ -148,6 +214,8 @@ export function zipPlatformExport(exportDir: string, metadata: ExpoExportMetadat
     // does not forward source errors, so without this an error from yazl itself (a file that changed or
     // vanished between the existence sweep and the read) is unhandled: the process dies with a raw
     // stack, this promise never settles, and the caller's cleanup never runs.
+    // yazl 3 emits read errors on the ZipFile itself.
+    zip.on("error", reject);
     zip.outputStream.on("error", reject);
     zip.outputStream
       .pipe(fs.createWriteStream(zipPath))

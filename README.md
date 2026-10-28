@@ -27,6 +27,8 @@ To build it from source instead:
 
 Before upgrading a CI pipeline to 1.2.0, note two changes: an unknown flag is now an error rather than silently ignored, and a rejected command exits 1 rather than 0. A pipeline that passed on a misspelled flag will now fail.
 
+Before upgrading an Expo pipeline to 1.2.2, note two changes. `release-expo` now sends your app config with every release and stops, releasing nothing, when it can't read it, so a job that releases an `--exportDir` from outside the project folder needs `--appConfig <file>` (see [App config parameters](#app-config-parameters)). And `promote` or `rollback` on an Expo app now exits 1 when any target failed or was busy with another change; it used to exit 0. New in 1.2.2: commands that ask "Are you sure?" take `--yes`, so a pipeline can run `dpctl rollback MyApp Production --yes`.
+
 ## Getting started
 
 1. Create a [DeployPulse account](https://deploypulse.io/register).
@@ -278,7 +280,9 @@ dpctl app transfer <appName> <newOwnerEmail>
 
 _NOTE: Just like with the `dpctl collaborator add` command, this expects that the new owner has already registered with DeployPulse using the specified e-mail address._
 
-Once confirmed, the specified developer becomes the app's owner and immediately receives the permissions associated with that role. Besides the transfer of ownership, nothing else about the app is modified (e.g. deployments, release history, collaborators). This means that you will still be a collaborator of the app, and therefore, if you want to remove yourself, you simply need to run the `dpctl collaborator rm` command after successfully transferring ownership.
+This sends a transfer invite to that e-mail address; nothing changes yet. The transfer completes only once the new owner accepts the invite from the e-mail, and the invite expires after 7 days. Until then you remain the owner, and you can send a new invite if it lapses.
+
+Once accepted, the new owner receives the owner's permissions and you are removed from the app. Deployments, deployment keys, release history and the other collaborators are not modified. If you still need access afterwards, ask the new owner to add you back with `dpctl collaborator add`.
 
 ### Deployment Management
 
@@ -674,6 +678,8 @@ dpctl release-expo <appName>
 [--runtimeVersion <runtimeVersion>]
 [--exportDir <exportDir>]
 [--metadata <json>]
+[--appConfig <file>]
+[--skipAppConfig]
 ```
 
 `release-expo` is for apps that use `expo-updates` rather than the CodePush SDK. The app must have been created with `--platform expo-v1`. Run it from your project folder:
@@ -686,9 +692,12 @@ It does what `eas update` does before uploading:
 
 1. Runs `npx expo export` for iOS and Android, using the Expo CLI installed in your project.
 2. Resolves each platform's runtime version from your app config with `npx expo-updates runtimeversion:resolve`, so every runtime version policy works, `fingerprint` included.
-3. Uploads each platform as its own release, then removes its temporary files.
+3. Reads your public app config with `npx expo config --type public --json` and sends it with the release. Devices read it as `Constants.expoConfig` (and `Constants.easConfig`) once they run the update.
+4. Uploads each platform as its own release, then removes its temporary files.
 
 Both platforms are exported and packaged before either is uploaded, so a problem with one can't leave the other released on its own. If you run `release-expo` on a CodePush app, dpctl stops before exporting and tells you to use `release-react` instead.
+
+If the server is busy, dpctl prints "Server busy, retrying…" and tries the upload again, waiting as long as the server asks, for up to five minutes. After that it stops with "Server busy, try again later." A busy answer means nothing was released, so running the command again is safe.
 
 #### Deployment name parameter
 
@@ -722,6 +731,22 @@ Extra metadata to attach to the release, as a JSON string. It is included in the
 ```shell
 dpctl release-expo MyExpoApp --metadata '{"channel":"beta"}'
 ```
+
+#### App config parameters
+
+Every release carries your app's public config, the same config `eas update` sends. Without it, `Constants.expoConfig` and `Constants.easConfig` are `null` on devices running the update, so anything that reads them breaks: values in `extra`, or the EAS project id `getExpoPushTokenAsync` falls back to. If dpctl can't read the config, it releases nothing.
+
+`--appConfig <file>` sends a config saved earlier instead of running `npx expo config`. Use it with `--exportDir` when releasing from outside the project folder:
+
+```shell
+npx expo export --output-dir dist
+npx expo config --type public --json > app-config.json
+dpctl release-expo MyExpoApp -d Production --exportDir dist --runtimeVersion 1.0.2 --appConfig app-config.json
+```
+
+`--skipAppConfig` releases without the config, with a warning. Only use it for an app that never reads `Constants.expoConfig` or `Constants.easConfig`.
+
+Releases made with dpctl 1.2.1 or older have no app config. Release again with 1.2.2 or later to fix devices running them.
 
 ## Debugging DeployPulse Integration
 
@@ -871,6 +896,12 @@ dpctl rollback <appName> <deploymentName>
 dpctl rollback MyApp-iOS Production
 ```
 
+`rollback` asks "Are you sure?" first. In a script or CI job, where nothing can answer, pass `--yes` (or `-y`); without it the prompt answers no and nothing is rolled back. The same flag works on every command that asks: `app rm`, `app transfer`, `deployment rm`, `deployment clear`, `access-key rm`, `session rm` and `collaborator rm`.
+
+```
+dpctl rollback MyApp-iOS Production --yes
+```
+
 This has the effect of creating a new release for the deployment that includes the **exact same code and metadata** as the version prior to the latest one. For example, imagine that you released the following updates to your app:
 
 | Release | Description       | Mandatory |
@@ -924,6 +955,11 @@ dpctl rollback MyExpoApp production --toEmbedded
 
 That issues the Expo `rollBackToEmbedded` directive. Devices return to the bundle they shipped with until the
 channel gets a new release, which supersedes the rollback.
+
+A target that is already rolled back is skipped, so running the same rollback again (after a timeout, say) is
+safe and exits 0. `rollback` and `promote` exit 1 when any target failed, or was skipped because another
+change to the channel was in progress; everything else they did stands, and running the command again retries
+the rest.
 
 ## Auto-Rollback
 
