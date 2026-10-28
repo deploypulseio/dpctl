@@ -793,26 +793,28 @@ describe("CLI", () => {
   });
 
   describe("--yes", () => {
-    // The real prompt, not the suite's stub: --yes has to answer it, and only for the command it came with.
-    beforeEach(() => (cmdexec.confirm as unknown as sinon.SinonStub).restore());
-
-    function withoutTerminal<T>(body: () => T): T {
-      const descriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    // Uses the real prompt, with no terminal for the whole test (the prompt runs after execute() returns),
+    // so it never waits for input even when the suite runs in a terminal.
+    let ttyDescriptor: PropertyDescriptor | undefined;
+    beforeEach(() => {
+      (cmdexec.confirm as unknown as sinon.SinonStub).restore();
+      ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
       Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
-      try {
-        return body();
-      } finally {
-        if (descriptor) Object.defineProperty(process.stdin, "isTTY", descriptor);
-        else delete (process.stdin as any).isTTY;
-      }
-    }
+    });
+    afterEach(() => {
+      if (ttyDescriptor) Object.defineProperty(process.stdin, "isTTY", ttyDescriptor);
+      else delete (process.stdin as any).isTTY;
+    });
+    const withoutTerminal = <T>(body: () => T): T => body();
+    // chalk colours the prompt when the suite runs in a terminal.
+    const plain = (text: unknown): string => String(text).replace(/\u001b\[[0-9;]*m/g, "");
 
     it("answers the prompt in a script, where it would otherwise say no", (done: Mocha.Done): void => {
       const removeAccessKey: sinon.SinonSpy = sandbox.spy(cmdexec.sdk, "removeAccessKey");
       withoutTerminal(() =>
         cmdexec.execute(<cli.IAccessKeyRemoveCommand>{ type: cli.CommandType.accessKeyRemove, accessKey: "8", yes: true }).done((): void => {
           sinon.assert.calledOnceWithExactly(removeAccessKey, "8");
-          sinon.assert.calledWithMatch(log, /\(y\/N\): yes \(--yes\)/);
+          assert.ok(log.getCalls().some((c) => /\(y\/N\): yes \(--yes\)/.test(plain(c.args[0]))), "the prompt says it was answered by --yes");
           done();
         }, done)
       );

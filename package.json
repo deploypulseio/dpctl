@@ -27,7 +27,7 @@
     "test": "mocha --require ts-node/register ./test/cli.ts ./test/hash-utils.ts ./test/acquisition-sdk.ts ./test/management-sdk.ts ./test/command-parser.ts ./test/config-file.ts --reporter mochawesome --exit"
   },
   "bin": {
-    "dpctl": "./bin/script/cli.js"
+    "dpctl": "bin/script/cli.js"
   },
   "repository": {
     "type": "git",
