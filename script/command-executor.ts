@@ -27,7 +27,6 @@ import * as Q from "q";
 const { rimraf } = require("rimraf");
 import * as semver from "semver";
 const Table = require("cli-table");
-const which = require("which");
 import wordwrap = require("wordwrap");
 import * as cli from "../script/types/cli";
 import {
@@ -95,9 +94,19 @@ export const execSync = childProcess.execSync;
 
 let connectionInfo: ILoginConnectionInfo;
 
+// Set from the running command's --yes. Reset for every command, so one command's --yes never answers
+// another's prompt.
+let assumeYes = false;
+
 export const confirm = (message: string = "Are you sure?"): Promise<boolean> => {
   message += " (y/N):";
   return Promise<boolean>((resolve, reject, notify): void => {
+    if (assumeYes) {
+      log(chalk.cyan(message) + " yes (--yes)");
+      resolve(true);
+      return;
+    }
+
     if (!process.stdin.isTTY) {
       log(chalk.cyan(message) + " no (not a terminal, so nothing was asked). Nothing was changed.");
       resolve(false);
@@ -236,7 +245,6 @@ function appAdd(command: cli.IAppAddCommand): Promise<void> {
 
 function appList(command: cli.IAppListCommand): Promise<void> {
   throwForInvalidOutputFormat(command.format);
-  let apps: App[];
   return sdk.getApps().then((retrievedApps: App[]): void => {
     printAppList(command.format, retrievedApps);
   });
@@ -294,6 +302,64 @@ function uploadProgressBar(): (currentProgress: number) => void {
 
 const EXPO_PLATFORM_LABELS: { [platform: string]: string } = { ios: "iOS", android: "Android" };
 
+const EXPO_BUSY_REASON = /another change to this channel is in progress/i;
+
+function isExpoSkipBusy(entry: { reason: string; busy?: boolean }): boolean {
+  return entry.busy === true || EXPO_BUSY_REASON.test(entry.reason ?? "");
+}
+
+/**
+ * The API answers a rollback where every target was skipped with a plain-text 400: `Nothing was rolled
+ * back on the "<channel>" channel: ios runtime version 1 (<reason>); ...`. Only when every reason says
+ * the target is already where a rollback would put it is that a success. "No earlier release" is a real
+ * refusal, and failed or busy targets come back as 500 and 409, never here.
+ */
+function isExpoAlreadyRolledBack(error: CodePushError): boolean {
+  if (!error || error.statusCode !== 400 || typeof error.message !== "string") return false;
+  const marker = '" channel: ';
+  if (!error.message.startsWith("Nothing was rolled back") || error.message.indexOf(marker) < 0) return false;
+  const reasons = (error.message.slice(error.message.indexOf(marker) + marker.length).match(/\(([^()]*)\)/g) ?? []).map((r: string) =>
+    r.slice(1, -1).trim()
+  );
+  return reasons.length > 0 && reasons.every((reason: string) => /^already (rolled back|serving)\b/i.test(reason));
+}
+
+/**
+ * Prints what an Expo rollback or promote skipped, then fails the command when any of it FAILED or was BUSY.
+ *
+ * The API answers 201 even when some targets failed, reporting each in `skipped` with `failed: true`
+ * (it was left unchanged). A plain skip ("nothing to roll back") is not an error, but a failure is,
+ * and exiting 0 on it let a script carry on as if everything had moved. So is a target skipped because
+ * another change to the channel was in progress (`busy: true`, or that reason from an API that predates
+ * the flag): nothing moved, and a retry is what moves it.
+ */
+function reportExpoSkipped(skipped: Array<{ platform: string; runtimeVersion: string; reason: string; failed?: boolean; busy?: boolean }>, done: string): void {
+  skipped.forEach((entry) => {
+    log(
+      chalk.yellow(
+        `Skipped ${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion}): ${entry.reason}.`
+      )
+    );
+  });
+  log(done);
+  const busy = skipped.filter((entry) => entry.failed !== true && isExpoSkipBusy(entry)).length;
+  const failed = skipped.filter((entry) => entry.failed === true).length;
+  const targets = (n: number) => `${n} target${n === 1 ? "" : "s"}`;
+  if (failed && busy) {
+    throw new Error(
+      `${targets(failed)} failed and ${targets(busy)} ${busy === 1 ? "was" : "were"} busy with another change; all were left unchanged. Run the command again to retry.`
+    );
+  }
+  if (failed) {
+    throw new Error(`${targets(failed)} failed and ${failed === 1 ? "was" : "were"} left unchanged. Run the command again to retry.`);
+  }
+  if (busy) {
+    throw new Error(
+      `${targets(busy)} ${busy === 1 ? "was" : "were"} left unchanged because another change to the channel was in progress. Run the command again to retry.`
+    );
+  }
+}
+
 // Copies what the source channel serves onto the destination. CodePush-only options are refused rather
 // than silently ignored: an Expo release has no mandatory flag or binary version.
 function promoteExpo(command: cli.IPromoteCommand): Promise<void> {
@@ -328,14 +394,7 @@ function promoteExpo(command: cli.IPromoteCommand): Promise<void> {
             `"${command.destDeploymentName}" on "${command.appName}".`
         );
       });
-      result.skipped.forEach((entry) => {
-        log(
-          chalk.yellow(
-            `Skipped ${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion}): ${entry.reason}.`
-          )
-        );
-      });
-      log("Devices pick this up on their next update check.");
+      reportExpoSkipped(result.skipped, "Devices pick this up on their next update check.");
     })()
   );
 }
@@ -403,28 +462,64 @@ function rollbackExpo(command: cli.IRollbackCommand): Promise<void> {
         if (!deployment || !deployment.key) {
           throw new Error(`Could not read the key of the "${command.deploymentName}" channel.`);
         }
-        const result = await sdk.rollbackExpo(deployment.key, {
-          platform: command.platform,
-          runtimeVersion: command.runtimeVersion,
-          toEmbedded: command.toEmbedded,
-        });
+        let result: Awaited<ReturnType<typeof sdk.rollbackExpo>>;
+        try {
+          result = await sdk.rollbackExpo(deployment.key, {
+            platform: command.platform,
+            runtimeVersion: command.runtimeVersion,
+            toEmbedded: command.toEmbedded,
+          });
+        } catch (error: any) {
+          // A retry after a rollback that did land (a timeout, a dropped connection) finds every target
+          // already rolled back. That is the state the user asked for, so it is not a failure.
+          if (!isExpoAlreadyRolledBack(error)) throw error;
+          log(chalk.yellow(error.message));
+          log("Nothing to do: the channel already serves what this rollback asked for.");
+          return;
+        }
 
         result.rollbacks.forEach((entry) => {
           const where = `${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion})`;
           const how = entry.mode === "embedded" ? "back to the embedded bundle" : "back to the previous release";
           log(`Rolled ${where} ${how} on the "${command.deploymentName}" channel of "${command.appName}".`);
         });
-        result.skipped.forEach((entry) => {
-          log(
-            chalk.yellow(
-              `Skipped ${EXPO_PLATFORM_LABELS[entry.platform] ?? entry.platform} (runtime version ${entry.runtimeVersion}): ${entry.reason}.`
-            )
-          );
-        });
-        log("Devices pick this up on their next update check.");
+        reportExpoSkipped(result.skipped, "Devices pick this up on their next update check.");
       })()
     );
   });
+}
+
+/**
+ * The app config sent with an Expo release, which devices read as Constants.expoConfig (and
+ * Constants.easConfig, from its extra.eas) once they run the update. Without it both are null, so an app
+ * that reads its settings or its EAS project id from there breaks after updating: that is why a config that
+ * can't be read fails the release unless --skipAppConfig says otherwise.
+ */
+async function releaseAppConfig(command: cli.IReleaseExpoCommand, projectRoot: string): globalThis.Promise<{ [key: string]: any } | undefined> {
+  if (command.appConfig) {
+    return expoUtils.readAppConfigFile(path.resolve(command.appConfig));
+  }
+  if (command.skipAppConfig) {
+    log(
+      chalk.yellow(
+        "[Warning] Releasing without the app config (--skipAppConfig). Devices that run this update get null for " +
+          "Constants.expoConfig and Constants.easConfig, so anything that reads them (extra values, the EAS project id " +
+          "for push tokens) breaks until a release with the config replaces it."
+      )
+    );
+    return undefined;
+  }
+  log(chalk.cyan(`Reading the app config with "npx expo config --type public --json".\n`));
+  try {
+    return await expoUtils.readPublicAppConfig(projectRoot);
+  } catch (error: any) {
+    throw new Error(
+      `Could not read your app config: ${error?.message ?? error}\n` +
+        "Devices read it as Constants.expoConfig once they run the update, so nothing was released. Run dpctl from your " +
+        'Expo project folder, pass --appConfig with a file saved from "npx expo config --type public --json", or pass ' +
+        "--skipAppConfig to release without it."
+    );
+  }
 }
 
 export const releaseExpo = (command: cli.IReleaseExpoCommand): Promise<void> => {
@@ -471,6 +566,8 @@ export const releaseExpo = (command: cli.IReleaseExpoCommand): Promise<void> => 
         prepared.push({ platform, runtimeVersion, zip });
       }
 
+      const appConfig = await releaseAppConfig(command, projectRoot);
+
       const released: string[] = [];
       for (const { platform, runtimeVersion, zip } of prepared) {
         const label = EXPO_PLATFORM_LABELS[platform];
@@ -481,7 +578,23 @@ export const releaseExpo = (command: cli.IReleaseExpoCommand): Promise<void> => 
           )
         );
         try {
-          await sdk.releaseExpo(deployment.key, zip.zipPath, platform, runtimeVersion, metadata, command.rollout, command.description, uploadProgressBar());
+          // A busy server is retried by the SDK; each try sends the whole upload again, so it gets a new bar.
+          let progressBar = uploadProgressBar();
+          await sdk.releaseExpo(
+            deployment.key,
+            zip.zipPath,
+            platform,
+            runtimeVersion,
+            metadata,
+            command.rollout,
+            command.description,
+            (progress: number) => progressBar(progress),
+            appConfig,
+            () => {
+              log(chalk.yellow("\nServer busy, retrying…"));
+              progressBar = uploadProgressBar();
+            }
+          );
         } catch (error: any) {
           if (released.length && error) {
             error.message = `${released.join(" and ")} was released, but ${label} failed: ${error.message}`;
@@ -553,9 +666,11 @@ function appTransfer(command: cli.IAppTransferCommand): Promise<void> {
 
   return confirm().then((wasConfirmed: boolean): Promise<void> => {
     if (wasConfirmed) {
+      // The server answers 202: an emailed invite, not a finished transfer. Nothing moves until they accept.
       return sdk.transferApp(command.appName, command.email).then((): void => {
         log(
-          'Successfully transferred the ownership of app "' + command.appName + '" to the account with email "' + command.email + '".'
+          `Transfer invite for app "${command.appName}" sent to ${command.email}. ` +
+            "The transfer completes once they accept it from the email (invites expire after 7 days)."
         );
       });
     }
@@ -901,6 +1016,7 @@ export const deserializeConnectionInfo = (): ILoginConnectionInfo => {
 
 export function execute(command: cli.ICommand) {
   connectionInfo = deserializeConnectionInfo();
+  assumeYes = command.yes === true;
 
   return Q(<void>null).then(() => {
     switch (command.type) {
@@ -1098,11 +1214,22 @@ function initiateExternalAuthenticationAsync(action: string): void {
   opener(url);
 }
 
+// A 401 from /authenticated is usually a bad key, but the API also says why when it knows ("This account
+// has been deleted."), and that reason is what the user needs to see.
+function loginAuthError(error: CodePushError): never {
+  if (error && error.statusCode === AccountManager.ERROR_UNAUTHORIZED) {
+    const message = (error.message || "").trim();
+    const generic = !message || message === "Unauthorized" || message.startsWith("{");
+    throw new Error(generic ? "Invalid access key." : message);
+  }
+  throw error;
+}
+
 function login(command: cli.ILoginCommand): Promise<void> {
   // Check if one of the flags were provided.
   if (command.accessKey) {
     sdk = getSdk(command.accessKey, CLI_HEADERS);
-    return sdk.isAuthenticated().then((isAuthenticated: boolean): Promise<void> => {
+    return sdk.isAuthenticated(/*throwIfUnauthorized*/ true, /*isLogin*/ true).catch(loginAuthError).then((isAuthenticated: boolean): Promise<void> => {
       if (!isAuthenticated) {
         throw new Error("Invalid access key.");
       }
@@ -1127,7 +1254,7 @@ function loginWithExternalAuthentication(action: string, command?: cli.ICommand)
 
     sdk = getSdk(accessKey, CLI_HEADERS);
 
-    return sdk.isAuthenticated().then((isAuthenticated: boolean): Promise<void> => {
+    return sdk.isAuthenticated(/*throwIfUnauthorized*/ true, /*isLogin*/ true).catch(loginAuthError).then((isAuthenticated: boolean): Promise<void> => {
       if (!isAuthenticated) {
         throw new Error("Invalid access key.");
       }
@@ -1571,11 +1698,20 @@ function printJson(object: any): void {
   log(JSON.stringify(object, /*replacer=*/ null, /*spacing=*/ 2));
 }
 
+// "Never" when the server says the key has not been used (null), blank when it does not report it at all
+// (an older server that sends no lastUsedAt), so a missing field is never shown as "Never".
+function formatLastUsed(lastUsedAt: string | null | undefined): string {
+  if (lastUsedAt === null) return "Never";
+  if (!lastUsedAt) return "";
+  const time = Date.parse(lastUsedAt);
+  return Number.isNaN(time) ? "" : formatDate(time);
+}
+
 function printAccessKeys(format: string, keys: AccessKey[]): void {
   if (format === "json") {
     printJson(keys);
   } else if (format === "table") {
-    printTable(["Name", "Created", "Expires", "Scope"], (dataSource: any[]): void => {
+    printTable(["Name", "Created", "Expires", "Last used", "Scope"], (dataSource: any[]): void => {
       const now = new Date().getTime();
 
       function isExpired(key: AccessKey): boolean {
@@ -1583,7 +1719,7 @@ function printAccessKeys(format: string, keys: AccessKey[]): void {
       }
 
       function keyToTableRow(key: AccessKey, dim: boolean): string[] {
-        const row: string[] = [key.name, key.createdTime ? formatDate(key.createdTime) : "", formatDate(key.expires), formatKeyScope(key.scopes, key.appNames)];
+        const row: string[] = [key.name, key.createdTime ? formatDate(key.createdTime) : "", formatDate(key.expires), formatLastUsed(key.lastUsedAt), formatKeyScope(key.scopes, key.appNames)];
 
         if (dim) {
           row.forEach((col: string, index: number) => {
@@ -1604,8 +1740,10 @@ function printSessions(format: string, sessions: Session[]): void {
   if (format === "json") {
     printJson(sessions);
   } else if (format === "table") {
-    printTable(["Machine", "Logged in"], (dataSource: any[]): void => {
-      sessions.forEach((session: Session) => dataSource.push([session.machineName, formatDate(session.loggedInTime)]));
+    printTable(["Machine", "IP", "Logged in"], (dataSource: any[]): void => {
+      sessions.forEach((session: Session) =>
+        dataSource.push([session.machineName, session.ips && session.ips.length ? session.ips.join(", ") : "", formatDate(session.loggedInTime)])
+      );
     });
   }
 }
@@ -1965,6 +2103,8 @@ export const bundleReact = (command: cli.IBundleReactCommand): Promise<void> => 
           const baseDir = path.dirname(outputFolder);
           const zipFile = new yazl.ZipFile();
           const writeStream = fs.createWriteStream(outputZipPath);
+          // yazl reports an unreadable input on the ZipFile, not on its output stream.
+          zipFile.on("error", reject);
           zipFile.outputStream.pipe(writeStream).on("error", reject).on("close", resolve);
           for (const file of files) {
             zipFile.addFile(file, slash(path.relative(baseDir, file)));

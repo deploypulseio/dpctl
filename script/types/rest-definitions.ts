@@ -16,6 +16,9 @@ export interface AccessKey extends AccessKeyBase {
   /*generated*/ scopes?: string[];
   /*generated*/ appIds?: string[] | null;
   /*generated*/ appNames?: string[] | null;
+  /*generated*/ lastUsedAt?: string | null;
+  /*generated, sessions only*/ createdByIp?: string | null;
+  /*generated, sessions only*/ machineName?: string | null;
 }
 
 /*in*/

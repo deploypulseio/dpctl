@@ -14,8 +14,6 @@ const packageJson = require(
 const ROLLOUT_PERCENTAGE_REGEX: RegExp = /^(100|[1-9][0-9]|[1-9])%?$/;
 const USAGE_PREFIX = "Usage: dpctl";
 
-// Command categories are:  access-key, app, release, deployment, deployment-key, login, logout 
-let isValidCommandCategory = false;
 // Commands are the verb following the command category (e.g.:  "add" in "app add").
 let isValidCommand = false;
 let lastFailMessage: string | undefined;
@@ -138,6 +136,18 @@ function accessKeyList(commandName: string, yargs: yargs.Argv): void {
   addCommonConfiguration(yargs);
 }
 
+// Every command that asks "Are you sure?" takes --yes, so a script or CI job can answer it. Without a
+// terminal and without --yes, the prompt answers no and nothing changes.
+function addYesOption(yargs: yargs.Argv): void {
+  yargs.option("yes", {
+    alias: "y",
+    default: false,
+    demand: false,
+    description: 'Answer yes to the "Are you sure?" prompt, for scripts and CI',
+    type: "boolean",
+  });
+}
+
 function accessKeyRemove(commandName: string, yargs: yargs.Argv): void {
   isValidCommand = true;
   yargs
@@ -145,6 +155,7 @@ function accessKeyRemove(commandName: string, yargs: yargs.Argv): void {
     .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option arguments
     .example("access-key " + commandName + ' "VSTS Integration"', 'Removes the "VSTS Integration" access key');
 
+  addYesOption(yargs);
   addCommonConfiguration(yargs);
 }
 
@@ -216,6 +227,7 @@ function appRemove(commandName: string, yargs: yargs.Argv): void {
     .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option arguments
     .example("app " + commandName + " MyApp", 'Removes app "MyApp"');
 
+  addYesOption(yargs);
   addCommonConfiguration(yargs);
 }
 
@@ -243,6 +255,7 @@ function removeCollaborator(commandName: string, yargs: yargs.Argv): void {
     .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
     .example("collaborator " + commandName + " MyApp foo@bar.com", 'Removes foo@bar.com as a collaborator from app "MyApp"');
 
+  addYesOption(yargs);
   addCommonConfiguration(yargs);
 }
 
@@ -270,6 +283,7 @@ function sessionRemove(commandName: string, yargs: yargs.Argv): void {
     .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option arguments
     .example("session " + commandName + ' "John\'s PC"', 'Removes the existing login session from "John\'s PC"');
 
+  addYesOption(yargs);
   addCommonConfiguration(yargs);
 }
 
@@ -283,6 +297,7 @@ function deploymentHistoryClear(commandName: string, yargs: yargs.Argv): void {
       'Clears the release history associated with deployment "MyDeployment" from app "MyApp"'
     );
 
+  addYesOption(yargs);
   addCommonConfiguration(yargs);
 }
 
@@ -316,6 +331,7 @@ function deploymentRemove(commandName: string, yargs: yargs.Argv): void {
     .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
     .example("deployment " + commandName + " MyApp MyDeployment", 'Removes deployment "MyDeployment" from app "MyApp"');
 
+  addYesOption(yargs);
   addCommonConfiguration(yargs);
 }
 
@@ -407,7 +423,6 @@ yargs
   .usage(USAGE_PREFIX + " <command>")
   .demand(/*count*/ 1, /*max*/ 1) // Require exactly one non-option argument.
   .command("access-key", "View and manage the access keys associated with your account", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " access-key <command>")
       .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments.
@@ -422,7 +437,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("app", "View and manage your DeployPulse apps", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " app <command>")
       .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments.
@@ -473,14 +487,15 @@ yargs
 
         addCommonConfiguration(yargs);
       })
-      .command("transfer", "Transfer the ownership of an app to another account", (yargs: yargs.Argv) => {
+      .command("transfer", "Invite another account to take ownership of an app (they accept from the email)", (yargs: yargs.Argv) => {
         // Required, or the category check below rejects every invocation.
         isValidCommand = true;
         yargs
           .usage(USAGE_PREFIX + " app transfer <appName> <email>")
           .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments
-          .example("app transfer MyApp foo@bar.com", 'Transfers the ownership of app "MyApp" to an account with email "foo@bar.com"');
+          .example("app transfer MyApp foo@bar.com", 'Emails "foo@bar.com" an invite to take ownership of app "MyApp"');
 
+        addYesOption(yargs);
         addCommonConfiguration(yargs);
       })
       .check((argv: any, aliases: { [aliases: string]: string }): any => isValidCommand); // Report unrecognized, non-hyphenated command category.
@@ -488,7 +503,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("collaborator", "View and manage app collaborators", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " collaborator <command>")
       .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments.
@@ -510,7 +524,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("debug", "View the DeployPulse debug logs for a running app", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     isValidCommand = true;
     yargs
       .usage(USAGE_PREFIX + " debug <platform>")
@@ -521,7 +534,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("deployment", "View and manage your app deployments", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " deployment <command>")
       .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments.
@@ -557,7 +569,6 @@ yargs
       .command("history", "Display the release history for a deployment", (yargs: yargs.Argv) => deploymentHistory("history", yargs))
       .command("h", "Display the release history for a deployment", (yargs: yargs.Argv) => deploymentHistory("h", yargs))
       .command("auto-rollback", "Manage auto-rollback configuration for a deployment", (yargs: yargs.Argv) => {
-        isValidCommandCategory = true;
         yargs
           .usage(USAGE_PREFIX + " deployment auto-rollback <command>")
           .demand(/*count*/ 1, /*max*/ 1)
@@ -614,7 +625,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("login", "Authenticate with the DeployPulse API in order to begin managing your apps", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     isValidCommand = true;
     yargs
       .usage(USAGE_PREFIX + " login [options]")
@@ -634,7 +644,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("logout", "Log out of the current session", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     isValidCommand = true;
     yargs
       .usage(USAGE_PREFIX + " logout")
@@ -780,6 +789,18 @@ yargs
         description: "Extra metadata to attach to the release, as a JSON string",
         type: "string",
       })
+      .option("appConfig", {
+        demand: false,
+        description:
+          'File holding the output of "npx expo config --type public --json", used instead of running it. For releasing an --exportDir from outside the project',
+        type: "string",
+      })
+      .option("skipAppConfig", {
+        default: false,
+        demand: false,
+        description: "Release without the app config. Devices running the update then get null for Constants.expoConfig",
+        type: "boolean",
+      })
       // No -r alias: on this command -r is --runtimeVersion.
       .option("rollout", {
         demand: false,
@@ -843,10 +864,10 @@ yargs
         type: "boolean",
       });
 
+    addYesOption(yargs);
     addCommonConfiguration(yargs);
   })
   .command("org", "View and switch the organization your commands run against", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " org <command>")
       .demand(/*count*/ 2, /*max*/ 3)
@@ -1255,7 +1276,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("webhook", "View and manage webhooks for your account", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " webhook <command>")
       .demand(/*count*/ 2, /*max*/ 2)
@@ -1361,7 +1381,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("session", "View and manage the current login sessions associated with your account", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     yargs
       .usage(USAGE_PREFIX + " session <command>")
       .demand(/*count*/ 2, /*max*/ 2) // Require exactly two non-option arguments.
@@ -1376,7 +1395,6 @@ yargs
     addCommonConfiguration(yargs);
   })
   .command("whoami", "Display the account info for the current login session", (yargs: yargs.Argv) => {
-    isValidCommandCategory = true;
     isValidCommand = true;
     yargs
       .usage(USAGE_PREFIX + " whoami")
@@ -1834,6 +1852,8 @@ export function createCommand(): cli.ICommand {
           releaseExpoCommand.description = argv["description"] ? backslash(String(argv["description"])) : undefined;
           releaseExpoCommand.metadata = argv["metadata"] as any;
           releaseExpoCommand.rollout = getRolloutValue(argv["rollout"] as any);
+          releaseExpoCommand.appConfig = argv["appConfig"] ? String(argv["appConfig"]) : undefined;
+          releaseExpoCommand.skipAppConfig = argv["skipAppConfig"] === true;
         }
         break;
 
@@ -1958,6 +1978,9 @@ export function createCommand(): cli.ICommand {
     }
 
     // --org applies to every command, so it is read once here rather than in each case above.
+    if (cmd && argv["yes"] === true) {
+      cmd.yes = true;
+    }
     if (cmd && argv["org"]) {
       cmd.org = String(argv["org"]);
     }
@@ -1973,10 +1996,6 @@ function isValidRollout(args: any): boolean {
   }
 
   return true;
-}
-
-function checkValidReleaseOptions(args: any): boolean {
-  return isValidRollout(args) && !!args["deploymentName"];
 }
 
 function getRolloutValue(input: string): number {

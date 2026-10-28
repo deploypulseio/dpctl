@@ -53,6 +53,8 @@ export enum CommandType {
 export interface ICommand {
   type: CommandType;
   org?: string;
+  /** --yes: answer yes to the "Are you sure?" prompt (scripts and CI). */
+  yes?: boolean;
 }
 
 export interface IAccessKeyAddCommand extends ICommand {
@@ -260,6 +262,10 @@ export interface IReleaseExpoCommand extends ICommand {
   metadata?: string;
   rollout?: number;
   description?: string;
+  /** A file holding the output of `npx expo config --type public --json`, read instead of running it. */
+  appConfig?: string;
+  /** Release without the app config. Constants.expoConfig is then null on devices running the update. */
+  skipAppConfig?: boolean;
 }
 
 export interface IBundleReactCommand extends ICommand {

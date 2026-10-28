@@ -35,6 +35,8 @@ export interface AccessKey {
   key?: string;
   scopes?: string[];
   appNames?: string[] | null;
+  /** When the key was last used (ISO time); null if never. Absent from servers that do not report it. */
+  lastUsedAt?: string | null;
 }
 
 /** A device's failure report for one release, as returned by GET /logs/errors. */
@@ -62,6 +64,8 @@ export interface DeploymentErrorsResult {
 export interface Session {
   loggedInTime: number;
   machineName: string;
+  /** The IP addresses this machine's sessions logged in from, when the server sends them. */
+  ips?: string[];
 }
 
 export type Headers = { [headerName: string]: string };
